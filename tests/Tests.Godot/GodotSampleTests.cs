@@ -42,10 +42,16 @@ public class GodotSampleTests
         var screenshot = Path.Combine(Path.GetTempPath(), $"skiagamerendering-godot-{renderingDriver}-{Guid.NewGuid():N}.png");
         try
         {
-            var (exitCode, output) = RunGodot(godot, sampleDir, renderingDriver, screenshot);
+            bool gpuValidation = renderingDriver == "vulkan" && Environment.GetEnvironmentVariable(GpuValidationVariable) == "1";
+            var (exitCode, output) = RunGodot(godot, sampleDir, renderingDriver, screenshot, gpuValidation);
             Assert.True(exitCode == 0, $"Godot exited with {exitCode}.\n{output}");
             Assert.True(File.Exists(screenshot), $"Godot did not write {screenshot}.\n{output}");
             Assert.Contains($"SkiaGameRendering.Godot on {renderingDriver}", output);
+            if (gpuValidation)
+            {
+                Assert.DoesNotContain("VUID-", output);
+                Assert.DoesNotContain("SYNC-HAZARD", output);
+            }
 
             using var bitmap = SKBitmap.Decode(screenshot);
             Assert.NotNull(bitmap);
@@ -69,7 +75,15 @@ public class GodotSampleTests
         }
     }
 
-    static (int exitCode, string output) RunGodot(string godot, string sampleDir, string renderingDriver, string screenshot)
+    /// <summary>
+    /// Set to 1 to run the vulkan case under Godot's <c>--gpu-validation</c> (the Khronos validation
+    /// layer, which must be installed) and fail on any <c>VUID-</c> or <c>SYNC-HAZARD</c> message.
+    /// Synchronization checks also need the layer told to run them; CI sets
+    /// <c>VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT</c>.
+    /// </summary>
+    const string GpuValidationVariable = "SKIAGAMERENDERING_GODOT_GPU_VALIDATION";
+
+    static (int exitCode, string output) RunGodot(string godot, string sampleDir, string renderingDriver, string screenshot, bool gpuValidation)
     {
         var startInfo = new ProcessStartInfo(godot)
         {
@@ -87,6 +101,8 @@ public class GodotSampleTests
         }
         startInfo.ArgumentList.Add("--rendering-driver");
         startInfo.ArgumentList.Add(renderingDriver);
+        if (gpuValidation)
+            startInfo.ArgumentList.Add("--gpu-validation");
         startInfo.ArgumentList.Add("--");
         startInfo.ArgumentList.Add("--screenshot");
         startInfo.ArgumentList.Add(screenshot);
@@ -94,11 +110,12 @@ public class GodotSampleTests
         using var process = Process.Start(startInfo)!;
         var stdout = process.StandardOutput.ReadToEndAsync();
         var stderr = process.StandardError.ReadToEndAsync();
-        if (!process.WaitForExit(TimeSpan.FromSeconds(120)))
+        // Generous: CI runs on software rasterizers, with the validation layer on top for vulkan.
+        if (!process.WaitForExit(TimeSpan.FromSeconds(300)))
         {
             process.Kill(entireProcessTree: true);
             process.WaitForExit();
-            return (-1, "Timed out after 120s.\n" + stdout.Result + "\n" + stderr.Result);
+            return (-1, "Timed out after 300s.\n" + stdout.Result + "\n" + stderr.Result);
         }
         return (process.ExitCode, stdout.Result + "\n" + stderr.Result);
     }

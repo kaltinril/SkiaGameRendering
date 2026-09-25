@@ -409,7 +409,7 @@ is the observable signal that a texture was detached.
 - `--headless` uses the dummy renderer (`GetRenderingDevice()` returns null), so the only way to
   test this adapter is a real Godot window. `tests/Tests.Godot.VK` launches the engine against the
   sample with a `--screenshot` user argument and probes the PNG; it runs only when `GODOT_BIN`
-  points at a Godot .NET executable and skips otherwise. CI does not download Godot.
+  points at a Godot .NET executable and skips otherwise. CI sets it on Windows and Linux (`master.yml`).
 - Beyond the sample, the adapter was exercised as a real NuGet package (packed, restored from a
   local feed into a fresh `Godot.NET.Sdk` project) through a scenario suite: several targets at
   once on `Sprite2D`, `TextureRect` and `_Draw()`/`DrawTexture`; a BGRA target; transparent clears

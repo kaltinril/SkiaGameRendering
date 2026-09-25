@@ -9,11 +9,8 @@ namespace Tests.Godot;
 /// tests exercise theirs; the only real test is launching the engine against
 /// <c>samples/Sample.Godot</c>, and that needs a binary this repo deliberately does not fetch.
 /// <para>
-/// CI does not set <c>GODOT_BIN</c> today, so <c>Tests.proj</c>'s wildcard discovery runs this
-/// project on <c>windows-latest</c> as a visible skip rather than a silent no-op. Wiring it up
-/// would need the Godot .NET zip downloaded onto the runner plus a Vulkan or D3D12 device there
-/// (<c>windows-latest</c> has no GPU; D3D12 WARP is plausible but unverified) - a decision for the
-/// repo owner, not this test.
+/// CI downloads the Godot .NET build and sets <c>GODOT_BIN</c> in <c>master.yml</c>'s Debug
+/// <c>desktop-and-core</c> leg (lavapipe, llvmpipe and WARP) and in the <c>godot-linux</c> job.
 /// </para>
 /// </summary>
 public sealed class GodotBinaryTheoryAttribute : TheoryAttribute
