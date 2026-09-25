@@ -5,7 +5,7 @@ using Xunit;
 namespace Tests.Godot;
 
 /// <summary>
-/// Launches the real Godot binary (<see cref="GodotBinaryTheoryAttribute"/>) against
+/// Launches the real Godot binary (<see cref="GodotBinaryFactAttribute"/>) against
 /// <c>samples/Sample.Godot</c> on each supported rendering driver, with the sample's <c>--screenshot</c>
 /// user argument, then checks the PNG it writes: the shared sample scene is a red circle of radius
 /// min(w,h)/2, centered, over a CornflowerBlue clear, so the center pixel must be pure red and every
@@ -18,18 +18,18 @@ public class GodotSampleTests
     static readonly SKColor Red = new(255, 0, 0);
     static readonly SKColor CornflowerBlue = new(100, 149, 237);
 
-    [GodotBinaryTheory(SkipOnMacOS = true)]
-    [InlineData("vulkan")]
-    [InlineData("opengl3")]
-    public void GodotSampleRendersSkiaScene(string renderingDriver) => RunSample(renderingDriver);
+    [GodotBinaryFact(Driver = "vulkan")]
+    public void Vulkan() => RunSample("vulkan");
 
-    [GodotBinaryTheory(WindowsOnly = true)]
-    [InlineData("d3d12")]
-    public void GodotSampleRendersSkiaScene_WindowsOnly(string renderingDriver) => RunSample(renderingDriver);
+    [GodotBinaryFact(Driver = "d3d12")]
+    public void D3D12() => RunSample("d3d12");
+
+    [GodotBinaryFact(Driver = "opengl3")]
+    public void OpenGl3() => RunSample("opengl3");
 
     static void RunSample(string renderingDriver)
     {
-        var godot = Environment.GetEnvironmentVariable(GodotBinaryTheoryAttribute.EnvironmentVariable)!;
+        var godot = Environment.GetEnvironmentVariable(GodotBinaryFactAttribute.EnvironmentVariable)!;
         var sampleDir = FindSampleDirectory();
 
         // Godot (run outside the editor) loads the project assembly from .godot/mono/temp/bin/Debug;
@@ -49,6 +49,10 @@ public class GodotSampleTests
             Assert.Contains($"SkiaGameRendering.Godot on {renderingDriver}", output);
             if (gpuValidation)
             {
+                // Godot enables the layer silently and skips it silently when it is missing, so a
+                // clean run proves nothing without this: the Vulkan loader's own log line, printed
+                // because CI sets VK_LOADER_DEBUG=layer.
+                Assert.Matches("Insert instance layer \"?VK_LAYER_KHRONOS_validation", output);
                 Assert.DoesNotContain("VUID-", output);
                 Assert.DoesNotContain("SYNC-HAZARD", output);
             }
@@ -78,8 +82,9 @@ public class GodotSampleTests
     /// <summary>
     /// Set to 1 to run the vulkan case under Godot's <c>--gpu-validation</c> (the Khronos validation
     /// layer, which must be installed) and fail on any <c>VUID-</c> or <c>SYNC-HAZARD</c> message.
-    /// Synchronization checks also need the layer told to run them; CI sets
-    /// <c>VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT</c>.
+    /// Also needs <c>VK_LOADER_DEBUG=layer</c> (the proof the layer loaded) and, for synchronization
+    /// checks, <c>VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT</c>;
+    /// the <c>godot-linux</c> CI job sets all three.
     /// </summary>
     const string GpuValidationVariable = "SKIAGAMERENDERING_GODOT_GPU_VALIDATION";
 
