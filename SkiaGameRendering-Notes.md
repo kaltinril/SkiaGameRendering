@@ -395,8 +395,10 @@ is the observable signal that a texture was detached.
   every core `VkPhysicalDeviceFeatures` member it finds supported, so Skia is told 1.2 (clamped
   from `VkSkiaSurfaceFactory.QueryApiVersion`) and left to query features itself.
 - Godot 4.6+ defaults **new** Windows projects to the `d3d12` driver (supported, see below) and
-  macOS to `metal` (not supported). macOS projects must pin `rendering_device/driver.macos` to
-  `vulkan`; `SkiaGodotRenderer.Initialize` throws with that instruction otherwise.
+  macOS to `metal`. macOS is unsupported on every driver: no Metal interop here, and SkiaSharp
+  3.119.4's macOS native library has no Vulkan backend (`GRContext.CreateVulkan` returns null on
+  MoltenVK; the dylib has none of the `vk*` entry-point names the Windows build carries).
+  `SkiaGodotRenderer.Initialize` throws on macOS.
 - Godot's default 2D pipeline is gamma-space (`hdr_2d` off), so a plain UNORM texture holding
   Skia's sRGB bytes displays 1:1 - none of the Stride adapter's linear-space compensation. The
   sample's pure red and CornflowerBlue read back exactly.

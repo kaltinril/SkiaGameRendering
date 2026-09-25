@@ -191,8 +191,15 @@ namespace SkiaGameRendering.Core.VK
                 GetProcedureAddress = getProc,
             };
 
+            // SkiaSharp 3.119.4's macOS native library is built without Skia's Vulkan backend (its
+            // libSkiaSharp.dylib carries none of the vk* entry-point names the Windows and Linux
+            // builds do), so CreateVulkan always returns null there, whatever the host.
             _grContext = GRContext.CreateVulkan(backendContext)
-                ?? throw new InvalidOperationException("GRContext.CreateVulkan failed.");
+                ?? throw (OperatingSystem.IsMacOS()
+                    ? new PlatformNotSupportedException(
+                        "GRContext.CreateVulkan failed: SkiaSharp's macOS native library is built without Vulkan support, " +
+                        "so Skia cannot render through Vulkan (MoltenVK) on macOS.")
+                    : new InvalidOperationException("GRContext.CreateVulkan failed."));
         }
 
         /// <summary>

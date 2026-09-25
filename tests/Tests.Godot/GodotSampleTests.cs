@@ -18,17 +18,14 @@ public class GodotSampleTests
     static readonly SKColor Red = new(255, 0, 0);
     static readonly SKColor CornflowerBlue = new(100, 149, 237);
 
-    [GodotBinaryTheory]
+    [GodotBinaryTheory(SkipOnMacOS = true)]
     [InlineData("vulkan")]
+    [InlineData("opengl3")]
     public void GodotSampleRendersSkiaScene(string renderingDriver) => RunSample(renderingDriver);
 
     [GodotBinaryTheory(WindowsOnly = true)]
     [InlineData("d3d12")]
     public void GodotSampleRendersSkiaScene_WindowsOnly(string renderingDriver) => RunSample(renderingDriver);
-
-    [GodotBinaryTheory(SkipOnMacOS = true)]
-    [InlineData("opengl3")]
-    public void GodotSampleRendersSkiaScene_NotOnMacOS(string renderingDriver) => RunSample(renderingDriver);
 
     static void RunSample(string renderingDriver)
     {

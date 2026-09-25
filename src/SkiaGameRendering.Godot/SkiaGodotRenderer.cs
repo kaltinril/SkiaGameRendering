@@ -55,15 +55,16 @@ namespace SkiaGameRendering.Godot
             RequireRenderThread("SkiaGodotRenderer.Initialize");
 
             var driverName = RenderingServer.GetCurrentRenderingDriverName();
+            if (OperatingSystem.IsMacOS())
+                throw new PlatformNotSupportedException(
+                    $"SkiaGameRendering.Godot does not support macOS yet (driver '{driverName}'): this library has no Metal interop, " +
+                    "SkiaSharp's macOS native library is built without Vulkan, and Godot's macOS OpenGL is an NSOpenGL context.");
+
             SkiaGodotBackend backend = driverName switch
             {
                 "vulkan" => new VulkanGodotBackend(),
                 "d3d12" => new D3D12GodotBackend(),
                 "opengl3" => new GlCompatibilityGodotBackend(),
-                "metal" => throw new NotSupportedException(
-                    "SkiaGameRendering.Godot does not support Godot's Metal driver yet (no Metal interop in this library). " +
-                    "Set the project setting rendering/rendering_device/driver.macos to \"vulkan\" (MoltenVK), or run with " +
-                    "--rendering-driver vulkan."),
                 "opengl3_angle" or "opengl3_es" => throw new NotSupportedException(
                     $"SkiaGameRendering.Godot supports Godot's Compatibility renderer only on the native 'opengl3' driver (Windows WGL, " +
                     $"Linux X11/GLX), not '{driverName}' (an EGL context). Use the Forward+ or Mobile renderer, or set " +

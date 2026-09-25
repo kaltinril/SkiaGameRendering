@@ -14,8 +14,10 @@ for how it is structured.
 - Godot 4.7 or newer, the .NET build (this package references `GodotSharp` 4.7.2 as a floor; a
   newer editor's own `Godot.NET.Sdk` unifies it upward)
 - A C# Godot project targeting .NET 8 or newer
-- One of: the **Forward+** or **Mobile** renderer on the **Vulkan** driver (Windows, Linux, macOS
-  via MoltenVK) or the **D3D12** driver (Windows); or the **Compatibility** renderer on the native
+- Windows or Linux. macOS is not supported: there is no Metal interop here, and SkiaSharp's macOS
+  native library is built without Vulkan, so MoltenVK is not an option either.
+- One of: the **Forward+** or **Mobile** renderer on the **Vulkan** driver (Windows, Linux) or the
+  **D3D12** driver (Windows); or the **Compatibility** renderer on the native
   `opengl3` driver (Windows; Linux X11). Metal, and the Compatibility renderer's ANGLE/Android/
   Wayland/macOS flavors, are not supported yet (see "Known limitations").
 
@@ -36,17 +38,8 @@ game's `.csproj` instead; the package's dependencies (`SkiaSharp`, `GodotSharp`)
 
 ## Pick a supported driver
 
-Godot 4.6+ configures **new** Windows projects for `d3d12` and macOS for `metal`. D3D12, Vulkan and
-the Compatibility renderer's `opengl3` all work with this package; Metal does not, so a macOS
-project needs Vulkan in `project.godot` (or Project Settings > Rendering > Rendering Device >
-Driver, with "Advanced Settings" on):
-
-```ini
-[rendering]
-
-renderer/rendering_method="forward_plus"
-rendering_device/driver.macos="vulkan"
-```
+Godot 4.6+ configures **new** Windows projects for `d3d12`. D3D12, Vulkan and the Compatibility
+renderer's `opengl3` all work with this package, so no setting needs changing on Windows or Linux.
 
 `SkiaGodotRenderer.Initialize` throws with this instruction on an unsupported driver.
 `--rendering-driver vulkan` (or `d3d12`; or `--rendering-method gl_compatibility` for OpenGL) on the
@@ -167,6 +160,7 @@ to the Godot executable to enable that test; it skips otherwise).
   runs under Godot's `--gpu-validation` (Khronos validation layer for Vulkan, the D3D12 debug layer
   for D3D12, GL debug output for OpenGL). That machine runs Godot's D3D12 driver with enhanced
   barriers; the legacy state-tracking path (older D3D12 runtimes) is implemented from Godot's source
-  but has not been exercised. Linux and macOS are expected to work identically on Vulkan (same
-  public API, same Skia Vulkan path Stride uses there), and Linux X11 on OpenGL (the raylib
-  adapter's GLX code), but have not been run.
+  but has not been exercised. Linux is expected to work identically on Vulkan (same public API,
+  same Skia Vulkan path Stride uses there) and on X11 OpenGL (the raylib adapter's GLX code), but
+  has not been run. On macOS, Godot 4.7.2 on MoltenVK reaches Skia and fails there:
+  `GRContext.CreateVulkan` returns null because SkiaSharp's macOS build has no Vulkan backend.

@@ -22,9 +22,7 @@ project/assembly_name="Sample.Godot"
 
 renderer/rendering_method="forward_plus"
 ; SkiaGameRendering.Godot supports the vulkan, d3d12 and opengl3 drivers and picks its backend at
-; runtime. These mirror what Godot 4.6+ writes for a new project (d3d12 on Windows),
-; except macOS: Godot's default there is metal, which this library does not support yet, so it is
-; pinned to vulkan (MoltenVK). Override per run with --rendering-driver vulkan|d3d12.
+; runtime. These mirror what Godot 4.6+ writes for a new project (d3d12 on Windows). macOS is not
+; supported on any driver. Override per run with --rendering-driver vulkan|d3d12.
 rendering_device/driver="vulkan"
 rendering_device/driver.windows="d3d12"
-rendering_device/driver.macos="vulkan"

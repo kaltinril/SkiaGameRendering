@@ -40,7 +40,7 @@ public sealed class GodotBinaryTheoryAttribute : TheoryAttribute
         }
     }
 
-    /// <summary>Skips on macOS, where Godot's opengl3 driver uses a context type this library does not support.</summary>
+    /// <summary>Skips on macOS, which the Godot adapter does not support on any driver.</summary>
     public bool SkipOnMacOS
     {
         get => false;
