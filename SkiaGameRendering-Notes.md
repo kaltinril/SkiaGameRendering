@@ -306,3 +306,77 @@ same as MonoGame, and the golden comes out identical to the DesktopGL ones.
   for it the same way it does for MonoGame. With `tests/mesa-vendor/` present and
   `GALLIUM_DRIVER` unset, Mesa's D3D12 path crashes the test host (MonoGame's DesktopGL tests
   too); that's the known landmine in the `headless-gpu-testing` skill, not the adapter.
+
+## 11. Godot 4 (Vulkan, completed)
+
+`src/SkiaGameRendering.Godot.VK` targets Godot 4.7+ .NET projects on the Forward+/Mobile renderer
+with the Vulkan driver. It is the first adapter in this repo that reaches the engine's device with
+**no reflection**: `RenderingDevice.GetDriverResource(DriverResource.X, rid, 0)` is public API
+(Godot 4.3+) returning the raw `VkInstance` (`TopmostObject`), `VkPhysicalDevice`, `VkDevice`
+(`LogicalDevice`), `VkQueue` (`CommandQueue`), queue family index (`QueueFamily`), and for any RD
+texture its `VkImage` (`Texture`) and `VkFormat` (`TextureDataFormat`). The texture Skia draws into
+is created with `RenderingDevice.TextureCreate` and shown through the stock `Texture2DRD` resource,
+which builds a shared *view* of the RD texture (no copy). Zero-copy, same as every other backend.
+
+### What made it non-trivial: Godot tracks image layouts
+
+Godot's `RenderingDeviceGraph` (servers/rendering/rendering_device_graph.cpp) derives each mutable
+texture's `VkImageLayout` from the last `ResourceUsage` it recorded, and only emits a barrier when
+that usage changes. A texture Godot merely samples starts at `RESOURCE_USAGE_NONE` (`UNDEFINED`),
+gets one `UNDEFINED -> SHADER_READ_ONLY_OPTIMAL` barrier the first frame it is drawn, and then
+**no barrier ever again** - every later frame's descriptor says `SHADER_READ_ONLY_OPTIMAL` and
+assumes it. Skia leaves a wrapped render target in `COLOR_ATTACHMENT_OPTIMAL`, and SkiaSharp
+3.119.4 has no `GrBackendSurfaceMutableState` binding to request otherwise (the same gap
+`VkSkiaSurfaceFactory.EndDraw` documents for Stride). Left alone, Godot samples an image whose real
+layout never matches its bookkeeping - which happens to work on NVIDIA and is undefined elsewhere.
+
+The fix is the "host inserts its own barrier" fallback Core.VK already prescribed, now packaged as
+`Core.VK`'s `VkImageLayoutTransitioner`: after Skia's synchronous flush, `End()` submits a
+`COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL` barrier on Godot's queue, and `Begin()`
+re-wraps the `GRBackendRenderTarget`/`SKSurface` each frame with that layout as Skia's starting
+point (Skia caches the last layout it set, so a persistent surface would skip its own transition
+back to `COLOR_ATTACHMENT_OPTIMAL`). Verified clean under Godot's `--gpu-validation` (Khronos
+validation layer 1.3.261.1): zero layout errors. The one remaining spec-permitted loose end is
+Godot's own first `UNDEFINED`-sourced barrier, which allows content discard; per-frame redraw makes
+it invisible, and no driver has been seen to discard.
+
+A second validation finding: `Texture2DRD` creates an sRGB view of the image, which is only legal on
+an image created with `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` (VUID-VkImageViewCreateInfo-image-01762).
+Godot sets that bit when `RDTextureFormat` lists shareable formats, so the adapter declares the
+UNORM and sRGB twins.
+
+### Threading and synchronization
+
+`get_driver_resource` and every RD command are guarded by `ERR_RENDER_THREAD_GUARD`. Under the
+default `rendering/driver/threads/thread_model` ("Safe") the render thread is the main thread and
+Godot submits once per frame in `RS::draw`, after `_Process` - so Skia submits from `_Process` are
+serialized with Godot's by construction and no queue lock is wired through (Godot's own per-queue
+`submit_mutex` is unreachable from C# anyway). Under "Separate", `RenderingServer.CallOnRenderThread`
+is required; `Begin` checks `RenderingServer.IsOnRenderThread()` and throws with that instruction.
+
+### Other findings
+
+- Godot creates its `VkInstance` against `VK_API_VERSION_1_2` (1.0 on a 1.0 loader) and enables
+  every core `VkPhysicalDeviceFeatures` member it finds supported, so Skia is told 1.2 (clamped
+  from `VkSkiaSurfaceFactory.QueryApiVersion`, also new) and left to query features itself.
+- Godot 4.6+ defaults **new** Windows projects to the `d3d12` driver and macOS to `metal`. Projects
+  using this package must pin `rendering_device/driver` (and `.windows`/`.macos`) to `vulkan`;
+  `SkiaGodotRenderer.Initialize` throws with that instruction otherwise. D3D12 exposes
+  `ID3D12Device`/`IDXGIAdapter`/`ID3D12CommandQueue`/`ID3D12Resource` through the same calls, so a
+  `Godot.D3D12` adapter on `Core.D3D12` is the natural next step; Godot tracks D3D12 resource
+  states the same way, so it needs the same hand-back barrier.
+- Godot's default 2D pipeline is gamma-space (`hdr_2d` off), so a plain UNORM texture holding
+  Skia's sRGB bytes displays 1:1 - none of the Stride adapter's linear-space compensation. The
+  sample's pure red and CornflowerBlue read back exactly.
+- A C# class library for Godot is a plain `Microsoft.NET.Sdk` project referencing the `GodotSharp`
+  package; only the game project uses `Godot.NET.Sdk`, and only its assembly is scanned for script
+  classes. The adapter's public types are ordinary classes handing back an engine-owned
+  `Texture2DRD`, so no source generators are involved.
+- `--headless` uses the dummy renderer (`GetRenderingDevice()` returns null), so the only way to
+  test this adapter is a real Godot window. `tests/Tests.Godot.VK` launches the engine against the
+  sample with a `--screenshot` user argument and probes the PNG; it runs only when `GODOT_BIN`
+  points at a Godot .NET executable and skips otherwise. CI does not download Godot.
+- Prior art: no GPU-path Skia integration for Godot existed. The published Godot+SkiaSharp projects
+  are CPU readback (`SKBitmap` -> `ImageTexture`), and other external renderers embedded in Godot
+  (Servo, Rive) share *memory* (external-memory handles) rather than the logical device.
+

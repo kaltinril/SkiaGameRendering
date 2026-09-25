@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="../../src/SkiaGameRendering.Core.VK/SkiaGameRendering.Core.VK.csproj" />
+  <Project Path="../../src/SkiaGameRendering.Godot.VK/SkiaGameRendering.Godot.VK.csproj" />
+  <Project Path="Sample.Godot.VK.csproj" DefaultStartup="true" />
+</Solution>

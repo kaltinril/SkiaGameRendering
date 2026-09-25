@@ -76,6 +76,26 @@ namespace SkiaGameRendering.Core.VK
 
         public GRContext GRContext => _grContext;
 
+        /// <summary>
+        /// Queries the Vulkan core version a host's instance/physical-device pair supports - the
+        /// lesser of <c>vkEnumerateInstanceVersion</c> and <c>VkPhysicalDeviceProperties.apiVersion</c> -
+        /// for hosts that do not keep the version they created their device against anywhere a caller
+        /// can read it back (Godot's <c>RenderingDevice</c> hands out the raw handles but not that
+        /// number; Stride's adapter hardcodes 1.3 because Stride itself refuses to start on less).
+        /// The result feeds <see cref="InitializeFromNative"/>'s <c>apiVersion</c>; a host that
+        /// deliberately created its instance against a LOWER version than the loader supports should
+        /// clamp the result to that, since Skia will otherwise assume core entry points the host never
+        /// asked for.
+        /// </summary>
+        public static uint QueryApiVersion(IntPtr instance, IntPtr physicalDevice)
+        {
+            if (instance == IntPtr.Zero)
+                throw new ArgumentException("Vulkan instance native pointer is null.", nameof(instance));
+            if (physicalDevice == IntPtr.Zero)
+                throw new ArgumentException("Vulkan physical device native pointer is null.", nameof(physicalDevice));
+            return VulkanNative.QueryApiVersion(instance, physicalDevice);
+        }
+
         /// <param name="instance">The host engine's <c>VkInstance</c>.</param>
         /// <param name="physicalDevice">The host engine's <c>VkPhysicalDevice</c>.</param>
         /// <param name="device">The host engine's <c>VkDevice</c>.</param>

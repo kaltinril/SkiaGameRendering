@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\eng\Versions.props" />
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <!-- Decodes the PNG the sample writes; nothing here draws with Skia. -->
+    <PackageReference Include="SkiaSharp" Version="[$(SkiaSharpVersion)]" />
+  </ItemGroup>
+
+  <!--
+    Nothing in this project references the Godot adapter's assembly: GodotSharp's types only work
+    inside a running Godot process, so the adapter cannot be exercised in-process the way the other
+    backends' tests exercise theirs. Instead GodotSampleTests launches the real Godot binary against
+    samples/Sample.Godot.VK and checks the screenshot it writes. The reference below exists only to
+    make `dotnet test` build that sample first (ReferenceOutputAssembly=false copies nothing).
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\samples\Sample.Godot.VK\Sample.Godot.VK.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

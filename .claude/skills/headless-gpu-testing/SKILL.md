@@ -154,6 +154,16 @@ runs today.
   the native writes never make it back into the managed array. An `IntPtr[]` (as used for
   `vkEnumeratePhysicalDevices`) round-trips fine without the attribute; a custom struct array does not.
 
+## Godot - a real window or nothing
+
+Godot's `--headless` switches to the dummy renderer (`RenderingServer.GetRenderingDevice()` returns
+null), and GodotSharp types only work inside a running engine, so `src/SkiaGameRendering.Godot.VK`
+cannot be exercised in-process at all. `tests/Tests.Godot.VK/GodotSampleTests.cs` instead launches
+the engine binary named by `GODOT_BIN` against `samples/Sample.Godot.VK` (its `-- --screenshot`
+user argument saves frame five and quits) and probes the PNG; without `GODOT_BIN` it skips, and CI
+does not download Godot. `--gpu-validation` turns on the Khronos validation layer when the Vulkan
+SDK is installed - that is how the adapter's layout dance was proven, not by reading the pixels.
+
 ## Engine glue - headless GraphicsDevice
 
 MonoGame and KNI both build a WindowsDX `GraphicsDevice` from a bare window handle, with no `Game`

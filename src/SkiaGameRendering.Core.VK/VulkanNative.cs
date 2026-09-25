@@ -76,5 +76,54 @@ namespace SkiaGameRendering.Core.VK
             }
             return vkGetInstanceProcAddr(instance, name);
         }
+
+        /// <summary>
+        /// Resolves a device-level entry point through <c>vkGetDeviceProcAddr</c>, throwing (rather
+        /// than returning <see cref="IntPtr.Zero"/>) so a missing core function fails at
+        /// <see cref="VkImageLayoutTransitioner"/> construction with the function's name instead of
+        /// as a null-call access violation later.
+        /// </summary>
+        internal static IntPtr RequireDeviceProc(IntPtr device, string name)
+        {
+            var proc = vkGetDeviceProcAddr(device, name);
+            if (proc == IntPtr.Zero)
+                throw new EntryPointNotFoundException($"vkGetDeviceProcAddr could not resolve '{name}' on the host's VkDevice.");
+            return proc;
+        }
+
+        /// <summary>
+        /// The highest Vulkan core version BOTH the host's instance (per <c>vkEnumerateInstanceVersion</c>)
+        /// and its physical device (per <c>VkPhysicalDeviceProperties.apiVersion</c>) support. See
+        /// <see cref="VkSkiaSurfaceFactory.QueryApiVersion"/> for why a host that does not record the
+        /// version it created its device against needs this.
+        /// </summary>
+        internal static unsafe uint QueryApiVersion(IntPtr instance, IntPtr physicalDevice)
+        {
+            const uint VK_API_VERSION_1_0 = 1u << 22;
+
+            // vkEnumerateInstanceVersion is a global (instance-less) command that only exists on
+            // Vulkan 1.1+ loaders; a 1.0 loader has no entry point for it and is, by definition, 1.0.
+            uint instanceVersion = VK_API_VERSION_1_0;
+            var enumerateInstanceVersion = vkGetInstanceProcAddr(IntPtr.Zero, "vkEnumerateInstanceVersion");
+            if (enumerateInstanceVersion != IntPtr.Zero)
+            {
+                uint reported;
+                if (((delegate* unmanaged<uint*, int>)enumerateInstanceVersion)(&reported) == 0)
+                    instanceVersion = reported;
+            }
+
+            var getPhysicalDeviceProperties = vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties");
+            if (getPhysicalDeviceProperties == IntPtr.Zero)
+                throw new EntryPointNotFoundException("vkGetInstanceProcAddr could not resolve 'vkGetPhysicalDeviceProperties'.");
+
+            // VkPhysicalDeviceProperties is 824 bytes and apiVersion is its first field; the rest
+            // of the struct is not needed here, so an oversized scratch buffer stands in for a full
+            // struct definition.
+            byte* properties = stackalloc byte[1024];
+            ((delegate* unmanaged<IntPtr, void*, void>)getPhysicalDeviceProperties)(physicalDevice, properties);
+            uint deviceVersion = *(uint*)properties;
+
+            return Math.Min(instanceVersion, deviceVersion);
+        }
     }
 }

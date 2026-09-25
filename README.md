@@ -2,7 +2,7 @@
 
 [![Join the chat](https://img.shields.io/discord/586997072373481494)](https://discord.gg/tG5RBgw)
 
-A library that lets MonoGame, KNI, FNA, raylib, and Stride applications use SkiaSharp's GPU rendering to produce game-engine textures — with zero-copy GPU texture sharing. Skia renders anti-aliased vector art, text, and 2D graphics directly into game-engine textures without any CPU readback.
+A library that lets MonoGame, KNI, FNA, raylib, Stride, and Godot applications use SkiaSharp's GPU rendering to produce game-engine textures — with zero-copy GPU texture sharing. Skia renders anti-aliased vector art, text, and 2D graphics directly into game-engine textures without any CPU readback.
 
 ## Platform Support
 
@@ -22,6 +22,8 @@ A library that lets MonoGame, KNI, FNA, raylib, and Stride applications use Skia
 | FNA (SDL_GPU) | Vulkan/D3D12/Metal | Blocked: FNA3D's default driver exposes no native device (see the FNA section below) | |
 | Stride (D3D11) | D3D11 | [![NuGet](https://img.shields.io/nuget/v/SkiaGameRendering.Stride.D3D11)](https://www.nuget.org/packages/SkiaGameRendering.Stride.D3D11) (Windows) | ANGLE (GL ES → D3D11 translation) on shared device |
 | Stride (Vulkan) | Vulkan | [![NuGet](https://img.shields.io/nuget/v/SkiaGameRendering.Stride.VK)](https://www.nuget.org/packages/SkiaGameRendering.Stride.VK) (Linux, macOS, Windows) | Skia's Vulkan backend on Stride's shared `VkDevice`/`VkQueue`, no separate context |
+| Godot 4.7+ (Vulkan) | Vulkan | Source only for now (`src/SkiaGameRendering.Godot.VK`) | Skia's Vulkan backend on the handles Godot's `RenderingDevice.GetDriverResource` exposes publicly; drawn into an RD texture shown via `Texture2DRD`. No reflection. |
+| Godot 4 (D3D12, Metal, Compatibility) | D3D12 / Metal / OpenGL | Not started | D3D12 handles come from the same public API, so a `Core.D3D12` adapter is the natural follow-up - see `TODO.md` |
 
 MonoGame 3.8.5 ships the legacy `WindowsDX` (D3D11) project unchanged alongside the two new native
 platforms above — only `WindowsDX12` and `DesktopVK` are blocked; D3D11 is expected to keep working
@@ -31,7 +33,7 @@ on 3.8.5 the same as it does on 3.8.4 (see `SkiaGameRendering-Notes.md` section 
 
 - .NET 8 (.NET 10 for the Stride backend)
 - Visual Studio 2022
-- MonoGame 3.8.4.1 (DesktopGL or WindowsDX), KNI (DesktopGL, WindowsDX, or WebGL/Blazor), FNA 26.09+ (D3D11 on Windows, or OpenGL anywhere), raylib, or Stride 4.4.0-beta5+ (D3D11 on Windows, or Vulkan on Windows/Linux/macOS; prerelease)
+- MonoGame 3.8.4.1 (DesktopGL or WindowsDX), KNI (DesktopGL, WindowsDX, or WebGL/Blazor), FNA 26.09+ (D3D11 on Windows, or OpenGL anywhere), raylib, Stride 4.4.0-beta5+ (D3D11 on Windows, or Vulkan on Windows/Linux/macOS; prerelease), or Godot 4.7+ .NET (Forward+/Mobile on Vulkan)
 - SkiaSharp 3.119.4 for WebGL and the KNI desktop backends; 3.119.2 for the MonoGame desktop projects
 
 ## Quick Start
@@ -49,6 +51,7 @@ quickstart linked below for raylib and Stride):
 - **FNA (OpenGL)**: `dotnet add package SkiaGameRendering.Fna.OGL`, same one line with `OpenGL`.
 - **Stride (D3D11)**: `dotnet add package SkiaGameRendering.Stride.D3D11` — see `docs/stride/quickstart.md`.
 - **Stride (Vulkan)**: `dotnet add package SkiaGameRendering.Stride.VK` — see `docs/stride/vulkan-quickstart.md`.
+- **Godot (Vulkan)**: `dotnet add package SkiaGameRendering.Godot.VK` (once published; reference the project from source until then) — see `docs/godot/quickstart.md`.
 
 No setup outside `Game` needed — `Program.cs` stays whatever the stock MonoGame/KNI template gives
 you (`using var game = new Game1(); game.Run();`). Inside `Game`, poll `SkiaRenderer.IsReady`
@@ -129,6 +132,7 @@ Dispose your own `SkiaRenderTarget2D` instances first — this doesn't track or 
 - `samples/Sample.Fna.OGL/`: FNA sample on FNA3D's OpenGL driver (same setup; the vendored fnalibs are Windows x64 only, so on Linux/macOS drop in your own)
 - `samples/Sample.Stride.D3D11/` — Stride sample (Windows, D3D11 only)
 - `samples/Sample.Stride.VK/` — Stride sample (Vulkan; builds on Windows via `StrideGraphicsApi=Vulkan`, runs on Windows/Linux/macOS)
+- `samples/Sample.Godot.VK/` — Godot 4.7 project (Vulkan; `dotnet build` it, then open or run it with a Godot .NET editor binary - not shipped here)
 - `samples/Test/` — More comprehensive test with dynamic add/remove, FPS counter, input handling
 
 DesktopGL, WindowsDX, KNI WindowsDX, and both FNA samples share the same `Game1.cs` via a linked file include; KNI DesktopGL has its own copy.
@@ -150,6 +154,7 @@ The library uses a backend abstraction (`SkiaBackend` base class) so each graphi
 - `src/SkiaGameRendering.Stride.D3D11/` — Stride library (shared `Core.ANGLE` + `SkiaStrideRenderTarget2D`, Windows/D3D11 only)
 - `src/SkiaGameRendering.Core.VK/` — engine-agnostic Vulkan/Skia interop shared by Vulkan-based backends
 - `src/SkiaGameRendering.Stride.VK/` — Stride library (shared `Core.VK` + `SkiaStrideVulkanRenderTarget2D`, Windows/Linux/macOS)
+- `src/SkiaGameRendering.Godot.VK/` — Godot library (shared `Core.VK` + `SkiaGodotRenderTarget2D`, Windows/Linux/macOS; no reflection, all public `RenderingDevice` API)
 
 See `SkiaGameRendering-Notes.md` for detailed technical documentation on how each backend works, including the ANGLE integration and D3D11 state management.
 

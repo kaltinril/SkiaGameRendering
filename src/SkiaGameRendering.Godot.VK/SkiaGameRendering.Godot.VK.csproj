@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\eng\Versions.props" />
+
+  <PropertyGroup>
+    <!--
+      net8.0 because GodotSharp 4.7.2 itself ships lib/net8.0 only (4.8-dev still does). A game
+      project may target net9/net10 on top of that; this library stays at the floor so any of them
+      can reference it.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>SkiaGameRendering.Godot.VK</PackageId>
+    <Version>$(LibraryVersion)</Version>
+    <Description>GPU SkiaSharp rendering into Godot 4 textures (Texture2DRD) via the Vulkan RenderingDevice, with zero-copy GPU texture sharing. Forward+ and Mobile renderers on the Vulkan driver.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <RepositoryUrl>https://github.com/vchelaru/SkiaGameRendering</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Plain Microsoft.NET.Sdk + a GodotSharp PackageReference is how a class library for Godot is
+      built (Godot.NET.Sdk is for the game project itself, which must be the one assembly Godot
+      scans for script classes). Nothing here derives from GodotObject, so Godot.SourceGenerators
+      is not needed either: the public types are ordinary C# classes that hand back an engine-owned
+      Texture2Drd. A game project's own Godot.NET.Sdk pins GodotSharp to its editor version, and
+      NuGet unifies this floor upward to it.
+    -->
+    <PackageReference Include="GodotSharp" Version="$(GodotSharpVersion)" />
+    <PackageReference Include="SkiaSharp" Version="[$(SkiaSharpVersion)]" />
+    <!--
+      Godot's Forward+/Mobile renderers run on Vulkan on Linux too, and the main SkiaSharp package
+      only carries Windows/macOS native assets implicitly - same reasoning as
+      SkiaGameRendering.Raylib.OGL's identical reference.
+    -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="[$(SkiaSharpVersion)]" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SkiaGameRendering.Core.VK\SkiaGameRendering.Core.VK.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
