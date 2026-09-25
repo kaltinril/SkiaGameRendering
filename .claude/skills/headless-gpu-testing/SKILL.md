@@ -157,12 +157,14 @@ runs today.
 ## Godot - a real window or nothing
 
 Godot's `--headless` switches to the dummy renderer (`RenderingServer.GetRenderingDevice()` returns
-null), and GodotSharp types only work inside a running engine, so `src/SkiaGameRendering.Godot.VK`
-cannot be exercised in-process at all. `tests/Tests.Godot.VK/GodotSampleTests.cs` instead launches
-the engine binary named by `GODOT_BIN` against `samples/Sample.Godot.VK` (its `-- --screenshot`
-user argument saves frame five and quits) and probes the PNG; without `GODOT_BIN` it skips, and CI
-does not download Godot. `--gpu-validation` turns on the Khronos validation layer when the Vulkan
-SDK is installed - that is how the adapter's layout dance was proven, not by reading the pixels.
+null), and GodotSharp types only work inside a running engine, so `src/SkiaGameRendering.Godot`
+cannot be exercised in-process at all. `tests/Tests.Godot/GodotSampleTests.cs` instead launches
+the engine binary named by `GODOT_BIN` against `samples/Sample.Godot`, once per
+`--rendering-driver` (vulkan, d3d12; its `-- --screenshot` user argument saves frame five and
+quits) and probes the PNG; without `GODOT_BIN` it skips, and CI does not download Godot.
+`--gpu-validation` turns on the Khronos validation layer (Vulkan, when the SDK is installed) or
+the D3D12 debug layer - that is how the adapters' layout/state dance was proven, not by reading
+the pixels.
 
 ## Engine glue - headless GraphicsDevice
 

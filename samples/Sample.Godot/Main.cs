@@ -1,5 +1,5 @@
 using Godot;
-using SkiaGameRendering.Godot.VK;
+using SkiaGameRendering.Godot;
 using SkiaSharp;
 using SharedScene = Sample.Shared.Scene;
 
@@ -10,9 +10,9 @@ using SharedScene = Sample.Shared.Scene;
 /// way a Godot project would show any other <see cref="Texture2D"/>.
 ///
 /// Run from this folder with the Godot 4.7 .NET editor binary, after `dotnet build`:
-///   godot --path . --rendering-driver vulkan
+///   godot --path . --rendering-driver vulkan     (or d3d12)
 /// Pass `-- --screenshot out.png` to save the fifth rendered frame to a PNG and quit, which is what
-/// tests/Tests.Godot.VK drives for an objective, no-human-in-the-loop check of the pixels.
+/// tests/Tests.Godot drives, once per driver, for an objective, no-human-in-the-loop pixel check.
 /// </summary>
 public partial class Main : Node2D
 {
@@ -23,8 +23,9 @@ public partial class Main : Node2D
     public override void _Ready()
     {
         // Optional: SkiaGodotRenderTarget2D auto-initializes on first use. Initializing explicitly
-        // fails fast (with a clear stack) if the project is not on the Vulkan RenderingDevice.
+        // fails fast (with a clear stack) if the project is not on a supported RenderingDevice driver.
         SkiaGodotRenderer.Initialize();
+        GD.Print($"SkiaGameRendering.Godot on {SkiaGodotRenderer.Driver} (zero-copy: {SkiaGodotRenderer.IsZeroCopy}, D3D12 enhanced barriers: {SkiaGodotRenderer.D3D12UsesEnhancedBarriers?.ToString() ?? "n/a"})");
 
         var size = GetViewportRect().Size;
         _canvas = new SkiaGodotRenderTarget2D((int)size.X, (int)size.Y);
@@ -68,7 +69,7 @@ public partial class Main : Node2D
 
     public override void _ExitTree()
     {
-        // Dispose render targets before tearing down the shared Vulkan interop they depend on.
+        // Dispose render targets before tearing down the shared interop they depend on.
         _canvas?.Dispose();
         _canvas = null;
         SkiaGodotRenderer.Dispose();

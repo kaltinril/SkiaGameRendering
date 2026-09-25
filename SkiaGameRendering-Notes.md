@@ -307,11 +307,13 @@ same as MonoGame, and the golden comes out identical to the DesktopGL ones.
   `GALLIUM_DRIVER` unset, Mesa's D3D12 path crashes the test host (MonoGame's DesktopGL tests
   too); that's the known landmine in the `headless-gpu-testing` skill, not the adapter.
 
-## 11. Godot 4 (Vulkan, completed)
+## 11. Godot 4 (Vulkan and D3D12, completed)
 
-`src/SkiaGameRendering.Godot.VK` targets Godot 4.7+ .NET projects on the Forward+/Mobile renderer
-with the Vulkan driver. It is the first adapter in this repo that reaches the engine's device with
-**no reflection**: `RenderingDevice.GetDriverResource(DriverResource.X, rid, 0)` is public API
+`src/SkiaGameRendering.Godot` targets Godot 4.7+ .NET projects on the Forward+/Mobile renderer
+with the Vulkan or D3D12 driver - one package, backend chosen at run time from
+`RenderingServer.GetCurrentRenderingDriverName()`, because Godot decides its driver per run (a
+project setting, `--rendering-driver`, or an automatic fallback). It is the first adapter in this
+repo that reaches the engine's device with **no reflection**: `RenderingDevice.GetDriverResource(DriverResource.X, rid, 0)` is public API
 (Godot 4.3+) returning the raw `VkInstance` (`TopmostObject`), `VkPhysicalDevice`, `VkDevice`
 (`LogicalDevice`), `VkQueue` (`CommandQueue`), queue family index (`QueueFamily`), and for any RD
 texture its `VkImage` (`Texture`) and `VkFormat` (`TextureDataFormat`). The texture Skia draws into
@@ -414,4 +416,52 @@ is the observable signal that a texture was detached.
 - Prior art: no GPU-path Skia integration for Godot existed. The published Godot+SkiaSharp projects
   are CPU readback (`SKBitmap` -> `ImageTexture`), and other external renderers embedded in Godot
   (Servo, Rive) share *memory* (external-memory handles) rather than the logical device.
+
+### D3D12
+
+Godot 4.6+ writes `rendering/rendering_device/driver.windows="d3d12"` into every new Windows
+project, so D3D12 is the path most new Godot Windows projects will hit. The same
+`GetDriverResource` calls return the `IDXGIAdapter1` (`PhysicalDevice`), `ID3D12Device`
+(`LogicalDevice`), `ID3D12CommandQueue` (`CommandQueue`) and a texture's `ID3D12Resource`
+(`Texture`), which is everything `Core.D3D12`'s `D3D12SkiaSurfaceFactory` needs. Two things made it
+different from Vulkan:
+
+- **Godot's D3D12 textures are typeless, and Skia cannot render into a typeless resource.**
+  `texture_create` in `rendering_device_driver_d3d12.cpp` always uses the format's typeless
+  family (`RD_TO_D3D12_FORMAT[...].family`) so UNORM and sRGB views can share one resource, and
+  `TextureDataFormat` reports that typeless format. Skia's D3D12 backend creates its render-target
+  view with a null descriptor (`GrD3DCpuDescriptorManager::createRenderTargetView`), which D3D12
+  rejects for typeless resources. `TextureCreateFromExtension` (Godot wrapping a typed resource we
+  own) is a dead end on this driver too: `Texture2DRD` always goes through `texture_create_shared`,
+  which the D3D12 driver refuses for a texture without a Godot-owned allocation. So the D3D12
+  backend renders into a typed `ID3D12Resource` this library allocates
+  (`D3D12SkiaSurfaceFactory.CreateRenderTargetResource`, raw COM) and `End()` queues one
+  `CopyResource` into Godot's texture - typed UNORM into TYPELESS of the same family is a legal
+  copy. GPU-to-GPU, no CPU readback, but not zero-copy; `SkiaGodotRenderer.IsZeroCopy` reports it.
+  A side benefit: Skia owns its surface outright, so nothing is re-wrapped per frame and no
+  sentinel draw is needed - the copy returns Skia's resource to `RENDER_TARGET`, which is what
+  Skia believes.
+- **Godot's D3D12 driver tracks state two different ways.** With
+  `D3D12_FEATURE_D3D12_OPTIONS12.EnhancedBarriersSupported` it uses the render graph's usage
+  tracking like Vulkan and maps a sampled texture to `D3D12_BARRIER_LAYOUT_SHADER_RESOURCE`,
+  whose legacy-state equivalent is `ALL_SHADER_RESOURCE`. Without it, it keeps legacy
+  per-subresource states and `command_uniform_set_prepare_for_use` narrows a texture sampled only
+  by a fragment shader to `PIXEL_SHADER_RESOURCE`; its later "is this transition redundant" check
+  (`_resource_transition_batch`) passes whenever the current state already has every wanted bit,
+  so once the texture sits in the state canvas rendering wants, Godot never barriers it again.
+  The backend queries `OPTIONS12` the same way Godot does and hands the texture back in the
+  matching state after every copy. This is also why priming is a *fragment-shader* draw rather
+  than a compute dispatch on both backends: compute would leave the legacy path in
+  `NON_PIXEL_SHADER_RESOURCE`, which Godot's first canvas draw would then transition away from -
+  a state change this library cannot observe. The remaining caveat: sampling the texture from a
+  vertex or compute shader on the legacy path moves Godot's belief, and the hand-back state no
+  longer matches (the debug layer reports it; hardware mostly tolerates it). 2D canvas use is
+  fragment-only. The dev box that verified all this runs Godot's D3D12 with enhanced barriers
+  (`SkiaGodotRenderer.D3D12UsesEnhancedBarriers` reports it); the legacy path is implemented from
+  the driver source but not yet exercised on hardware.
+
+`Core.D3D12` gained `D3D12ResourceTransitioner` (a ring of command allocator/list pairs and a
+fence, `Transition` and `CopyWithTransitions`), the `CreateRenderTargetResource`/`ReleaseResource`
+helpers, `QueryEnhancedBarriersSupported`, and `EndDraw(synchronous)`, all over raw COM vtables in
+`D3D12Com.cs` (slots cross-checked against `tests/Tests.Core.D3D12/D3D12TestNative.cs`).
 

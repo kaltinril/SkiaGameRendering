@@ -11,11 +11,11 @@
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>SampleGodotVK</RootNamespace>
+    <RootNamespace>SampleGodot</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\SkiaGameRendering.Godot.VK\SkiaGameRendering.Godot.VK.csproj" />
+    <ProjectReference Include="..\..\src\SkiaGameRendering.Godot\SkiaGameRendering.Godot.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -11,9 +11,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <PackageId>SkiaGameRendering.Godot.VK</PackageId>
+    <PackageId>SkiaGameRendering.Godot</PackageId>
     <Version>$(LibraryVersion)</Version>
-    <Description>GPU SkiaSharp rendering into Godot 4 textures (Texture2DRD) via the Vulkan RenderingDevice, with zero-copy GPU texture sharing. Forward+ and Mobile renderers on the Vulkan driver.</Description>
+    <!--
+      One package for every Godot RenderingDevice driver rather than one per graphics API like the
+      other engines here: Godot picks Vulkan or D3D12 at RUN time (a project setting, a command-line
+      switch, or an automatic fallback when the preferred driver is unavailable), so a game cannot
+      choose a graphics-API-specific package at build time. The backend is selected from
+      RenderingServer.GetCurrentRenderingDriverName() when the renderer initializes.
+    -->
+    <Description>GPU SkiaSharp rendering into Godot 4 textures (Texture2DRD) on the Vulkan and D3D12 RenderingDevice drivers (Forward+ and Mobile renderers), with zero-copy GPU texture sharing on Vulkan.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
     <RepositoryUrl>https://github.com/vchelaru/SkiaGameRendering</RepositoryUrl>
@@ -40,6 +47,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SkiaGameRendering.Core.VK\SkiaGameRendering.Core.VK.csproj" />
+    <!-- Only touched when Godot reports the d3d12 driver; compiles everywhere, runs on Windows. -->
+    <ProjectReference Include="..\SkiaGameRendering.Core.D3D12\SkiaGameRendering.Core.D3D12.csproj" />
   </ItemGroup>
 
   <ItemGroup>

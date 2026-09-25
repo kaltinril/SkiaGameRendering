@@ -109,11 +109,11 @@ jobs:
       # exercises the Vulkan variant of Stride.Graphics.dll on windows-latest with no Linux/macOS
       # hardware needed to build - repo issue #54's "force GraphicsPlatform: Vulkan" trick.
       - run: dotnet build samples/Sample.Stride.VK/Sample.Stride.VK.csproj -c ${{ matrix.configuration }}
-      - run: dotnet build src/SkiaGameRendering.Godot.VK/SkiaGameRendering.Godot.VK.csproj -c ${{ matrix.configuration }}
+      - run: dotnet build src/SkiaGameRendering.Godot/SkiaGameRendering.Godot.csproj -c ${{ matrix.configuration }}
       # A Godot.NET.Sdk project builds with the plain .NET SDK (GodotSharp comes from NuGet); no
-      # Godot binary is needed to compile it. Running it is another matter - tests/Tests.Godot.VK
+      # Godot binary is needed to compile it. Running it is another matter - tests/Tests.Godot
       # skips unless GODOT_BIN is set, which this workflow deliberately does not do.
-      - run: dotnet build samples/Sample.Godot.VK/Sample.Godot.VK.csproj -c ${{ matrix.configuration }}
+      - run: dotnet build samples/Sample.Godot/Sample.Godot.csproj -c ${{ matrix.configuration }}
       - run: dotnet build benchmarks/Benchmarks.ShapeRendering.DesktopGL/Benchmarks.ShapeRendering.DesktopGL.csproj -c ${{ matrix.configuration }}
       - run: dotnet build benchmarks/Benchmarks.ShapeRendering.WindowsDX/Benchmarks.ShapeRendering.WindowsDX.csproj -c ${{ matrix.configuration }}
       - run: dotnet pack src/SkiaGameRendering/SkiaGameRendering.csproj -c ${{ matrix.configuration }}

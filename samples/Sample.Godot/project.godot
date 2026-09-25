@@ -10,20 +10,21 @@ config_version=5
 
 [application]
 
-config/name="Sample.Godot.VK"
+config/name="Sample.Godot"
 run/main_scene="res://Main.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 
 [dotnet]
 
-project/assembly_name="Sample.Godot.VK"
+project/assembly_name="Sample.Godot"
 
 [rendering]
 
 renderer/rendering_method="forward_plus"
-; SkiaGameRendering.Godot.VK is Vulkan-only. Godot 4.6+ defaults NEW projects to d3d12 on Windows
-; and metal on macOS, so a project using this package must pin the RenderingDevice driver to
-; Vulkan explicitly (SkiaGodotRenderer.Initialize throws with this instruction otherwise).
+; SkiaGameRendering.Godot supports the vulkan and d3d12 RenderingDevice drivers and picks its
+; backend at runtime. These mirror what Godot 4.6+ writes for a new project (d3d12 on Windows),
+; except macOS: Godot's default there is metal, which this library does not support yet, so it is
+; pinned to vulkan (MoltenVK). Override per run with --rendering-driver vulkan|d3d12.
 rendering_device/driver="vulkan"
-rendering_device/driver.windows="vulkan"
+rendering_device/driver.windows="d3d12"
 rendering_device/driver.macos="vulkan"

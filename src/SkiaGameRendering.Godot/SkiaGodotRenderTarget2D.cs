@@ -1,10 +1,10 @@
 using Godot;
 using SkiaSharp;
 
-namespace SkiaGameRendering.Godot.VK
+namespace SkiaGameRendering.Godot
 {
     /// <summary>
-    /// A GPU texture that SkiaSharp renders directly into and Godot displays like any other
+    /// A GPU texture that SkiaSharp renders into and Godot displays like any other
     /// <see cref="Texture2D"/>: assign <see cref="Texture"/> to a <see cref="Sprite2D"/>,
     /// <see cref="TextureRect"/>, material, or anything else that takes one. Same Begin/Canvas/End
     /// shape as the other engines' render targets in this repo, minus a composite step -
@@ -18,10 +18,11 @@ namespace SkiaGameRendering.Godot.VK
     /// skia.Canvas.DrawCircle(256, 256, 200, paint);
     /// skia.End();
     /// </code>
-    /// Requires the Forward+ or Mobile renderer on the Vulkan driver, and must be used on the render
-    /// thread - the main thread under Godot's default "Safe" thread model, or inside
-    /// <see cref="RenderingServer.CallOnRenderThread"/> under "Separate". See
-    /// <c>SkiaGodotVulkanContext</c> for what happens underneath.
+    /// Works on the Forward+ and Mobile renderers with the Vulkan or D3D12 driver (the backend is
+    /// picked at runtime from <see cref="RenderingServer.GetCurrentRenderingDriverName"/>), and must
+    /// be used on the render thread - the main thread under Godot's default "Safe" thread model, or
+    /// inside <see cref="RenderingServer.CallOnRenderThread"/> under "Separate". See
+    /// <c>SkiaGodotBackend</c> and its two implementations for what happens underneath.
     /// </summary>
     public sealed class SkiaGodotRenderTarget2D : IDisposable
     {
@@ -45,8 +46,8 @@ namespace SkiaGameRendering.Godot.VK
 
             Width = width;
             Height = height;
-            var context = SkiaGodotRenderer.EnsureInitialized();
-            _target = new SkiaGodotTarget(context, width, height, colorType);
+            var backend = SkiaGodotRenderer.EnsureInitialized();
+            _target = new SkiaGodotTarget(backend, width, height, colorType);
         }
 
         public int Width { get; }
@@ -54,19 +55,21 @@ namespace SkiaGameRendering.Godot.VK
         public int Height { get; }
 
         /// <summary>
-        /// The engine-side <see cref="Texture2Drd"/> viewing Skia's texture - assign it wherever Godot
-        /// takes a <see cref="Texture2D"/>. Its contents update in place; nothing needs re-assigning
-        /// after each <see cref="End"/>.
+        /// The engine-side texture Skia's output lands in - assign it wherever Godot takes a
+        /// <see cref="Texture2D"/>. Its contents update in place; nothing needs re-assigning after
+        /// each <see cref="End"/>. On the RenderingDevice drivers this is a <see cref="Texture2Drd"/>
+        /// viewing <see cref="TextureRid"/>; typed as the base class so the API does not change if
+        /// a backend for a renderer without a RenderingDevice is added.
         /// </summary>
-        public Texture2Drd Texture =>
+        public Texture2D Texture =>
             (_target ?? throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D))).Texture;
 
         /// <summary>
         /// The underlying <see cref="RenderingDevice"/> texture RID, for <b>sampling</b> at the RD level
-        /// (e.g. as a <c>SamplerWithTexture</c> uniform in your own shader). Owned by this object; do
-        /// not free it. Do not copy to or from it, clear it, or bind it as a storage image through
-        /// <see cref="RenderingDevice"/>: Godot's render graph would then move it out of the sampled
-        /// layout this object keeps it in, and Skia's next draw would start from a wrong layout.
+        /// (e.g. as a <c>SamplerWithTexture</c> uniform in your own fragment shader). Owned by this
+        /// object; do not free it. Do not copy to or from it, clear it, or bind it as a storage image
+        /// through <see cref="RenderingDevice"/>: Godot's render graph would then move it out of the
+        /// sampled layout this object keeps it in.
         /// </summary>
         public Rid TextureRid =>
             (_target ?? throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D))).TextureRid;
@@ -100,10 +103,10 @@ namespace SkiaGameRendering.Godot.VK
         }
 
         /// <summary>
-        /// Ends the render pass started by <see cref="Begin"/>: flushes Skia's queued GPU work,
-        /// submits it to Godot's queue, and hands the texture back in the layout Godot expects.
-        /// Nothing is composited - <see cref="Texture"/> is already in the scene tree wherever you
-        /// put it. Throws if <see cref="Begin"/> wasn't called first.
+        /// Ends the render pass started by <see cref="Begin"/>: submits Skia's queued GPU work to
+        /// Godot's queue and hands the texture back in the state Godot expects, without waiting on
+        /// the GPU. Nothing is composited - <see cref="Texture"/> is already in the scene tree wherever
+        /// you put it. Throws if <see cref="Begin"/> wasn't called first.
         /// </summary>
         public void End()
         {
@@ -130,7 +133,7 @@ namespace SkiaGameRendering.Godot.VK
             new() { BlendMode = CanvasItemMaterial.BlendModeEnum.PremultAlpha };
 
         /// <summary>
-        /// Releases the RD texture and Skia surface. Throws if called between <see cref="Begin"/>
+        /// Releases the RD texture and Skia's resources. Throws if called between <see cref="Begin"/>
         /// and <see cref="End"/>. Nodes still displaying <see cref="Texture"/> show nothing afterward.
         /// <para>
         /// Under the default "Safe" thread model this completes synchronously. Under "Separate",

@@ -2,40 +2,47 @@ using System.Diagnostics;
 using SkiaSharp;
 using Xunit;
 
-namespace Tests.Godot.VK;
+namespace Tests.Godot;
 
 /// <summary>
-/// Launches the real Godot binary (<see cref="GodotBinaryFactAttribute"/>) against
-/// <c>samples/Sample.Godot.VK</c> with its <c>--screenshot</c> user argument, then checks the PNG it
-/// writes: the shared sample scene is a red circle of radius min(w,h)/2, centered, over a
-/// CornflowerBlue clear, so the center pixel must be pure red and every corner pure blue. Solid
-/// fills are driver-independent, unlike anti-aliased edges, which is why this probes pixels instead
-/// of comparing a golden image (the window size also varies with the host's display scaling).
+/// Launches the real Godot binary (<see cref="GodotBinaryTheoryAttribute"/>) against
+/// <c>samples/Sample.Godot</c> on each RenderingDevice driver, with the sample's <c>--screenshot</c>
+/// user argument, then checks the PNG it writes: the shared sample scene is a red circle of radius
+/// min(w,h)/2, centered, over a CornflowerBlue clear, so the center pixel must be pure red and every
+/// corner pure blue. Solid fills are driver-independent, unlike anti-aliased edges, which is why
+/// this probes pixels instead of comparing a golden image (the window size also varies with the
+/// host's display scaling).
 /// </summary>
 public class GodotSampleTests
 {
     static readonly SKColor Red = new(255, 0, 0);
     static readonly SKColor CornflowerBlue = new(100, 149, 237);
 
-    [GodotBinaryFact]
-    public void GodotSampleRendersSkiaSceneIntoTexture2DRD()
+    [GodotBinaryTheory]
+    [InlineData("vulkan")]
+    [InlineData("d3d12")]
+    public void GodotSampleRendersSkiaSceneIntoTexture2DRD(string renderingDriver)
     {
-        var godot = Environment.GetEnvironmentVariable(GodotBinaryFactAttribute.EnvironmentVariable)!;
+        if (renderingDriver == "d3d12" && !OperatingSystem.IsWindows())
+            return; // Godot only offers d3d12 on Windows; nothing to test elsewhere.
+
+        var godot = Environment.GetEnvironmentVariable(GodotBinaryTheoryAttribute.EnvironmentVariable)!;
         var sampleDir = FindSampleDirectory();
 
         // Godot (run outside the editor) loads the project assembly from .godot/mono/temp/bin/Debug;
-        // Tests.Godot.VK.csproj's ProjectReference pins the sample build to Debug for that reason.
+        // Tests.Godot.csproj's ProjectReference pins the sample build to Debug for that reason.
         // Check anyway, so a missing build fails here with a message instead of as a Godot crash.
-        var assembly = Path.Combine(sampleDir, ".godot", "mono", "temp", "bin", "Debug", "Sample.Godot.VK.dll");
+        var assembly = Path.Combine(sampleDir, ".godot", "mono", "temp", "bin", "Debug", "Sample.Godot.dll");
         Assert.True(File.Exists(assembly),
-            $"Sample assembly not found at {assembly}. Build samples/Sample.Godot.VK first (any configuration of this test project builds it in Debug).");
+            $"Sample assembly not found at {assembly}. Build samples/Sample.Godot first (any configuration of this test project builds it in Debug).");
 
-        var screenshot = Path.Combine(Path.GetTempPath(), $"skiagamerendering-godot-{Guid.NewGuid():N}.png");
+        var screenshot = Path.Combine(Path.GetTempPath(), $"skiagamerendering-godot-{renderingDriver}-{Guid.NewGuid():N}.png");
         try
         {
-            var (exitCode, output) = RunGodot(godot, sampleDir, screenshot);
+            var (exitCode, output) = RunGodot(godot, sampleDir, renderingDriver, screenshot);
             Assert.True(exitCode == 0, $"Godot exited with {exitCode}.\n{output}");
             Assert.True(File.Exists(screenshot), $"Godot did not write {screenshot}.\n{output}");
+            Assert.Contains($"SkiaGameRendering.Godot on {renderingDriver}", output);
 
             using var bitmap = SKBitmap.Decode(screenshot);
             Assert.NotNull(bitmap);
@@ -59,7 +66,7 @@ public class GodotSampleTests
         }
     }
 
-    static (int exitCode, string output) RunGodot(string godot, string sampleDir, string screenshot)
+    static (int exitCode, string output) RunGodot(string godot, string sampleDir, string renderingDriver, string screenshot)
     {
         var startInfo = new ProcessStartInfo(godot)
         {
@@ -70,7 +77,7 @@ public class GodotSampleTests
         startInfo.ArgumentList.Add("--path");
         startInfo.ArgumentList.Add(sampleDir);
         startInfo.ArgumentList.Add("--rendering-driver");
-        startInfo.ArgumentList.Add("vulkan");
+        startInfo.ArgumentList.Add(renderingDriver);
         startInfo.ArgumentList.Add("--");
         startInfo.ArgumentList.Add("--screenshot");
         startInfo.ArgumentList.Add(screenshot);
@@ -103,11 +110,11 @@ public class GodotSampleTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null)
         {
-            var candidate = Path.Combine(dir.FullName, "samples", "Sample.Godot.VK");
+            var candidate = Path.Combine(dir.FullName, "samples", "Sample.Godot");
             if (File.Exists(Path.Combine(candidate, "project.godot")))
                 return candidate;
             dir = dir.Parent;
         }
-        throw new InvalidOperationException("Could not locate samples/Sample.Godot.VK above " + AppContext.BaseDirectory);
+        throw new InvalidOperationException("Could not locate samples/Sample.Godot above " + AppContext.BaseDirectory);
     }
 }

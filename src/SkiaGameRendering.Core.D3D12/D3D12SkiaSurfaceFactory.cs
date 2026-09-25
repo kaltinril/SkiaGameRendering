@@ -79,6 +79,60 @@ namespace SkiaGameRendering.Core.D3D12
 
         public GRContext GRContext => _grContext;
 
+        /// <summary>
+        /// Whether the host's device (and the D3D12 runtime under it) supports enhanced barriers.
+        /// An engine that has them tracks textures by <c>D3D12_BARRIER_LAYOUT</c> rather than legacy
+        /// <c>D3D12_RESOURCE_STATES</c> (Godot's D3D12 driver does exactly this switch), which changes
+        /// the legacy state a host adapter must hand a resource back in - see the Godot backend.
+        /// </summary>
+        public static bool QueryEnhancedBarriersSupported(IntPtr device)
+        {
+            if (device == IntPtr.Zero)
+                throw new ArgumentException("D3D12 device native pointer is null.", nameof(device));
+            return D3D12Com.CheckEnhancedBarriersSupported(device);
+        }
+
+        /// <summary>
+        /// Allocates a typed, render-target-capable <c>ID3D12Resource</c> on the host's device,
+        /// starting in <c>D3D12_RESOURCE_STATE_RENDER_TARGET</c>, ready for
+        /// <see cref="CreateTextureState"/>. For hosts whose own textures Skia cannot render into
+        /// directly - Skia's D3D12 backend creates its render-target view with a null descriptor, so
+        /// the resource's own format must be a typed one, and Godot allocates every texture with the
+        /// typeless family format. Release it with <see cref="ReleaseResource"/>.
+        /// </summary>
+        public static IntPtr CreateRenderTargetResource(IntPtr device, int width, int height, uint dxgiFormat)
+        {
+            if (device == IntPtr.Zero)
+                throw new ArgumentException("D3D12 device native pointer is null.", nameof(device));
+            if (width <= 0)
+                throw new ArgumentOutOfRangeException(nameof(width));
+            if (height <= 0)
+                throw new ArgumentOutOfRangeException(nameof(height));
+
+            var desc = new D3D12Com.D3D12_RESOURCE_DESC
+            {
+                Dimension = D3D12Com.D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Alignment = 0,
+                Width = (ulong)width,
+                Height = (uint)height,
+                DepthOrArraySize = 1,
+                MipLevels = 1,
+                Format = dxgiFormat,
+                SampleDesc = new D3D12Com.DXGI_SAMPLE_DESC { Count = 1, Quality = 0 },
+                Layout = D3D12Com.D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                Flags = D3D12Com.D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+            };
+            var heap = new D3D12Com.D3D12_HEAP_PROPERTIES { Type = D3D12Com.D3D12_HEAP_TYPE_DEFAULT };
+            return D3D12Com.CreateCommittedResource(device, heap, desc, D3D12Constants.ResourceStateRenderTarget);
+        }
+
+        /// <summary>Releases a resource from <see cref="CreateRenderTargetResource"/> (one <c>IUnknown::Release</c>).</summary>
+        public static void ReleaseResource(IntPtr resource)
+        {
+            if (resource != IntPtr.Zero)
+                D3D12Com.Release(resource);
+        }
+
         /// <param name="adapter">
         /// The host's <c>IDXGIAdapter1*</c> (or <c>IDXGIAdapter*</c>) the device was created against.
         /// </param>
@@ -192,13 +246,14 @@ namespace SkiaGameRendering.Core.D3D12
 
         /// <summary>
         /// Flushes Skia's recorded D3D12 commands and submits them to the shared
-        /// <c>ID3D12CommandQueue</c> (<c>GRContext.Flush(submit: true, synchronous: true)</c>) - the
+        /// <c>ID3D12CommandQueue</c> (<c>GRContext.Flush(submit: true, synchronous)</c>) - the
         /// one call in this whole class that actually calls <c>ExecuteCommandLists</c>, which is why
         /// it (and not, say, <see cref="CreateSurface"/>) is what <see cref="BeginDraw"/>'s queue lock
-        /// brackets. <c>synchronous: true</c> blocks until the GPU finishes, matching
-        /// <c>VkSkiaSurfaceFactory.EndDraw</c>'s <c>Flush(true, true)</c> and for the same reason: the
-        /// host is about to read or resume using the resource and needs the GPU work to have actually
-        /// landed first.
+        /// brackets. <paramref name="synchronous"/> <c>true</c> (the default) blocks until the GPU
+        /// finishes, matching <c>VkSkiaSurfaceFactory.EndDraw</c> and for the same reason: a host about
+        /// to read the resource from the CPU needs the GPU work to have actually landed first. A host
+        /// whose own consumption is queued behind this on the SAME queue can pass <c>false</c> and skip
+        /// the stall, as the Godot backend does.
         /// <para>
         /// <b>This cannot tell the caller what <c>D3D12_RESOURCE_STATES</c> the resource ends up in.</b>
         /// Verified directly against SkiaSharp 3.119.4's native P/Invoke surface (<c>SkiaApi</c>), not
@@ -218,11 +273,11 @@ namespace SkiaGameRendering.Core.D3D12
         /// since none exists.
         /// </para>
         /// </summary>
-        public void EndDraw()
+        public void EndDraw(bool synchronous = true)
         {
             try
             {
-                _grContext.Flush(true, true);
+                _grContext.Flush(submit: true, synchronous: synchronous);
             }
             finally
             {
