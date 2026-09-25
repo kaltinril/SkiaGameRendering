@@ -159,7 +159,8 @@ runs today.
 Godot's `--headless` gives the dummy driver, so `src/SkiaGameRendering.Godot`
 has no in-process GPU test. `tests/Tests.Godot/GodotSampleTests.cs` launches
 the binary named by `GODOT_BIN` against `samples/Sample.Godot` once per
-rendering driver and skips without it; CI does not fetch Godot.
+rendering driver and skips without it; `master.yml` runs it on Windows (vulkan, d3d12) and Linux
+(vulkan under validation, opengl3).
 
 ## Engine glue - headless GraphicsDevice
 
