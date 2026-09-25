@@ -234,20 +234,17 @@ namespace SkiaGameRendering.Core.VK
         /// </param>
         public VkTextureState CreateTextureState(
             ulong vkImage, uint format, uint imageLayout, uint imageUsageFlags, uint imageTiling,
-            uint sampleCount = 1, uint levelCount = 1, uint currentQueueFamily = 0xFFFFFFFF,
+            uint sampleCount = 1, uint levelCount = 1, uint currentQueueFamily = VkConstants.QueueFamilyIgnored,
             uint sharingMode = 0, bool hasHostOwnedAllocation = true)
         {
-            const uint VK_IMAGE_USAGE_TRANSFER_SRC_BIT = 0x1;
-            const uint VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x2;
-
             if (vkImage == 0)
                 throw new ArgumentException("VkImage handle is null (0).", nameof(vkImage));
             if (!hasHostOwnedAllocation)
                 throw new NotSupportedException(
                     "Core.VK only supports wrapping a host-owned VkImage/VkDeviceMemory - it does " +
                     "not allocate memory for Skia to manage.");
-            if ((imageUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0 ||
-                (imageUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == 0)
+            if ((imageUsageFlags & VkConstants.ImageUsageTransferSrc) == 0 ||
+                (imageUsageFlags & VkConstants.ImageUsageTransferDst) == 0)
                 throw new ArgumentException(
                     "imageUsageFlags must include both VK_IMAGE_USAGE_TRANSFER_SRC_BIT (0x1) and " +
                     "VK_IMAGE_USAGE_TRANSFER_DST_BIT (0x2) - Skia's Vulkan backend unconditionally " +
@@ -330,14 +327,18 @@ namespace SkiaGameRendering.Core.VK
 
         /// <summary>
         /// Flushes Skia's recorded Vulkan commands and submits them to the shared <c>VkQueue</c>
-        /// (<c>GRContext.Flush(submit: true, synchronous: true)</c>) - the one call in this whole
+        /// (<c>GRContext.Flush(submit: true, synchronous)</c>) - the one call in this whole
         /// class that actually calls <c>vkQueueSubmit</c>, which is why it (and not, say,
         /// <see cref="CreateSurface"/>) is what <see cref="BeginDraw"/>'s queue lock brackets.
-        /// <c>synchronous: true</c> blocks until the GPU finishes, matching
-        /// <c>AngleSkiaSurfaceFactory.UnbindAfterDrawing</c>'s <c>glFinish()</c> call and for the same
-        /// reason: the host is about to read or resume using the image and needs the GPU work to have
-        /// actually landed first. A relaxed asynchronous submit is a possible future optimization,
-        /// unverified there too.
+        /// <paramref name="synchronous"/> <c>true</c> (the default) blocks until the GPU finishes,
+        /// matching <c>AngleSkiaSurfaceFactory.UnbindAfterDrawing</c>'s <c>glFinish()</c> call and for
+        /// the same reason: a host about to read the image from the CPU, or to consume it on a
+        /// different queue, needs the GPU work to have actually landed first. A host whose own
+        /// consumption of the image is submitted to the SAME <c>VkQueue</c> afterward (Godot samples
+        /// it in its frame submit, which is queue-ordered behind this one) can pass <c>false</c> and
+        /// skip the stall; Skia still recycles its command buffers safely through its own fences.
+        /// The Godot adapter runs this way and is verified clean under the Vulkan validation layer;
+        /// Stride keeps the synchronous default.
         /// <para>
         /// <b>This cannot tell the caller what <c>VkImageLayout</c> the image ends up in.</b> Verified
         /// directly against SkiaSharp 3.119.4's native P/Invoke surface (<c>SkiaApi</c>), not assumed:
@@ -363,11 +364,11 @@ namespace SkiaGameRendering.Core.VK
         /// needs) rather than trust a reported value, since none exists.
         /// </para>
         /// </summary>
-        public void EndDraw()
+        public void EndDraw(bool synchronous = true)
         {
             try
             {
-                _grContext.Flush(true, true);
+                _grContext.Flush(submit: true, synchronous: synchronous);
             }
             finally
             {

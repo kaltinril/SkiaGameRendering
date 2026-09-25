@@ -37,10 +37,13 @@ namespace SkiaGameRendering.Core.VK
         public const uint ImageUsageColorAttachment = 0x10;
 
         public const uint QueueFamilyIgnored = 0xFFFFFFFF;
+
+        /// <summary><c>VK_MAKE_API_VERSION(0, major, minor, 0)</c>.</summary>
+        public static uint MakeApiVersion(uint major, uint minor) => (major << 22) | (minor << 12);
     }
 
     /// <summary>
-    /// Records and submits a single <c>vkCmdPipelineBarrier</c> image-layout transition on the host's
+    /// Records and submits single <c>vkCmdPipelineBarrier</c> image-layout transitions on the host's
     /// queue - the "host needing certainty must insert its own barrier" fallback
     /// <see cref="VkSkiaSurfaceFactory.EndDraw"/>'s doc comment describes, packaged so an adapter
     /// does not have to own Vulkan command-pool plumbing itself.
@@ -52,11 +55,17 @@ namespace SkiaGameRendering.Core.VK
     /// tracks image layouts itself (Godot's <c>RenderingDevice</c> render graph does, and expects a
     /// sampled texture to sit in <c>SHADER_READ_ONLY_OPTIMAL</c>) will then record barriers whose
     /// <c>oldLayout</c> no longer matches reality. Transitioning the image back to the layout the
-    /// host believes it is in, right after Skia's synchronous flush, keeps both sides' bookkeeping
-    /// truthful - at the cost of one small extra queue submission per draw.
+    /// host believes it is in, right after Skia's flush, keeps both sides' bookkeeping truthful - at
+    /// the cost of one small extra queue submission per draw.
+    ///
+    /// Submissions are asynchronous: <see cref="Transition"/> returns as soon as the barrier is
+    /// queued. A ring of <c>slots</c> command buffers (each with its own pool and fence) lets that
+    /// many transitions be in flight before a call has to wait for the oldest one; with the default
+    /// of eight, an adapter drawing a handful of targets per frame never stalls the CPU on the GPU in
+    /// steady state. <see cref="WaitForCompletion"/> drains everything, for teardown.
     ///
     /// Every Vulkan entry point is resolved through <c>vkGetDeviceProcAddr</c> (see
-    /// <see cref="VulkanNative"/>), never P/Invoked by name, and the command pool is created on the
+    /// <see cref="VulkanNative"/>), never P/Invoked by name, and the command pools are created on the
     /// caller's queue family so the recorded barrier is valid to submit on that queue. Not thread-safe;
     /// one instance per device/queue, driven from whatever thread the host lets submit.
     /// </summary>
@@ -87,11 +96,17 @@ namespace SkiaGameRendering.Core.VK
         readonly delegate* unmanaged<IntPtr, uint, ulong*, int> _vkResetFences;
         readonly delegate* unmanaged<IntPtr, uint, ulong*, uint, ulong, int> _vkWaitForFences;
 
-        ulong _commandPool;
-        IntPtr _commandBuffer;
-        ulong _fence;
-        bool _submissionPending;
+        readonly Slot[] _slots;
+        int _nextSlot;
         bool _disposed;
+
+        struct Slot
+        {
+            public ulong CommandPool;
+            public IntPtr CommandBuffer;
+            public ulong Fence;
+            public bool Pending;
+        }
 
         /// <param name="device">The host's <c>VkDevice</c>.</param>
         /// <param name="queue">
@@ -101,14 +116,19 @@ namespace SkiaGameRendering.Core.VK
         /// <param name="queueFamilyIndex">The queue family <paramref name="queue"/> belongs to.</param>
         /// <param name="acquireQueueLock">
         /// The same optional queue-lock hook <see cref="VkSkiaSurfaceFactory.InitializeFromNative"/>
-        /// takes; bracketed around this class's one <c>vkQueueSubmit</c>.
+        /// takes; bracketed around this class's <c>vkQueueSubmit</c> calls.
         /// </param>
-        public VkImageLayoutTransitioner(IntPtr device, IntPtr queue, uint queueFamilyIndex, Func<IDisposable>? acquireQueueLock = null)
+        /// <param name="slots">
+        /// How many transitions may be in flight before <see cref="Transition"/> waits for the oldest.
+        /// </param>
+        public VkImageLayoutTransitioner(IntPtr device, IntPtr queue, uint queueFamilyIndex, Func<IDisposable>? acquireQueueLock = null, int slots = 8)
         {
             if (device == IntPtr.Zero)
                 throw new ArgumentException("Vulkan device native pointer is null.", nameof(device));
             if (queue == IntPtr.Zero)
                 throw new ArgumentException("Vulkan queue native pointer is null.", nameof(queue));
+            if (slots < 1)
+                throw new ArgumentOutOfRangeException(nameof(slots));
 
             _device = device;
             _queue = queue;
@@ -127,48 +147,51 @@ namespace SkiaGameRendering.Core.VK
             _vkResetFences = (delegate* unmanaged<IntPtr, uint, ulong*, int>)VulkanNative.RequireDeviceProc(device, "vkResetFences");
             _vkWaitForFences = (delegate* unmanaged<IntPtr, uint, ulong*, uint, ulong, int>)VulkanNative.RequireDeviceProc(device, "vkWaitForFences");
 
-            var poolInfo = new VkCommandPoolCreateInfo
-            {
-                sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-                queueFamilyIndex = queueFamilyIndex,
-            };
-            ulong pool;
-            Check(vkCreateCommandPool(device, &poolInfo, IntPtr.Zero, &pool), "vkCreateCommandPool");
-            _commandPool = pool;
-
+            _slots = new Slot[slots];
             try
             {
-                var allocateInfo = new VkCommandBufferAllocateInfo
+                for (int i = 0; i < slots; i++)
                 {
-                    sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                    commandPool = pool,
-                    level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                    commandBufferCount = 1,
-                };
-                IntPtr commandBuffer;
-                Check(vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), "vkAllocateCommandBuffers");
-                _commandBuffer = commandBuffer;
+                    var poolInfo = new VkCommandPoolCreateInfo
+                    {
+                        sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                        flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                        queueFamilyIndex = queueFamilyIndex,
+                    };
+                    ulong pool;
+                    Check(vkCreateCommandPool(device, &poolInfo, IntPtr.Zero, &pool), "vkCreateCommandPool");
+                    _slots[i].CommandPool = pool;
 
-                var fenceInfo = new VkFenceCreateInfo { sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-                ulong fence;
-                Check(vkCreateFence(device, &fenceInfo, IntPtr.Zero, &fence), "vkCreateFence");
-                _fence = fence;
+                    var allocateInfo = new VkCommandBufferAllocateInfo
+                    {
+                        sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                        commandPool = pool,
+                        level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                        commandBufferCount = 1,
+                    };
+                    IntPtr commandBuffer;
+                    Check(vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), "vkAllocateCommandBuffers");
+                    _slots[i].CommandBuffer = commandBuffer;
+
+                    var fenceInfo = new VkFenceCreateInfo { sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+                    ulong fence;
+                    Check(vkCreateFence(device, &fenceInfo, IntPtr.Zero, &fence), "vkCreateFence");
+                    _slots[i].Fence = fence;
+                }
             }
             catch
             {
-                _vkDestroyCommandPool(device, pool, IntPtr.Zero);
-                _commandPool = 0;
+                DestroySlots();
                 throw;
             }
         }
 
         /// <summary>
-        /// Submits one <c>vkCmdPipelineBarrier</c> moving <paramref name="image"/> from
-        /// <paramref name="oldLayout"/> to <paramref name="newLayout"/> on the host's queue. Returns
-        /// as soon as the submission is queued; the previous transition (if still in flight) is waited
-        /// on first, since this class reuses one command buffer. Call <see cref="WaitForCompletion"/>
-        /// if the caller needs the GPU to have finished before continuing.
+        /// Queues one <c>vkCmdPipelineBarrier</c> moving <paramref name="image"/> from
+        /// <paramref name="oldLayout"/> to <paramref name="newLayout"/> on the host's queue and
+        /// returns without waiting for it, unless every slot is still in flight - then it waits for
+        /// the oldest first. Call <see cref="WaitForCompletion"/> if the caller needs the GPU to have
+        /// finished before continuing.
         /// </summary>
         public void Transition(
             ulong image, uint oldLayout, uint newLayout,
@@ -179,16 +202,19 @@ namespace SkiaGameRendering.Core.VK
             if (image == 0)
                 throw new ArgumentException("VkImage handle is null (0).", nameof(image));
 
-            WaitForCompletion();
+            ref var slot = ref _slots[_nextSlot];
+            _nextSlot = (_nextSlot + 1) % _slots.Length;
 
-            Check(_vkResetCommandPool(_device, _commandPool, 0), "vkResetCommandPool");
+            WaitForSlot(ref slot);
+
+            Check(_vkResetCommandPool(_device, slot.CommandPool, 0), "vkResetCommandPool");
 
             var beginInfo = new VkCommandBufferBeginInfo
             {
                 sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
             };
-            Check(_vkBeginCommandBuffer(_commandBuffer, &beginInfo), "vkBeginCommandBuffer");
+            Check(_vkBeginCommandBuffer(slot.CommandBuffer, &beginInfo), "vkBeginCommandBuffer");
 
             var barrier = new VkImageMemoryBarrier
             {
@@ -209,11 +235,11 @@ namespace SkiaGameRendering.Core.VK
                     layerCount = layerCount,
                 },
             };
-            _vkCmdPipelineBarrier(_commandBuffer, srcStageMask, dstStageMask, 0, 0, null, 0, null, 1, &barrier);
+            _vkCmdPipelineBarrier(slot.CommandBuffer, srcStageMask, dstStageMask, 0, 0, null, 0, null, 1, &barrier);
 
-            Check(_vkEndCommandBuffer(_commandBuffer), "vkEndCommandBuffer");
+            Check(_vkEndCommandBuffer(slot.CommandBuffer), "vkEndCommandBuffer");
 
-            var commandBuffer = _commandBuffer;
+            var commandBuffer = slot.CommandBuffer;
             var submitInfo = new VkSubmitInfo
             {
                 sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -223,21 +249,27 @@ namespace SkiaGameRendering.Core.VK
 
             using (_acquireQueueLock?.Invoke())
             {
-                Check(_vkQueueSubmit(_queue, 1, &submitInfo, _fence), "vkQueueSubmit");
+                Check(_vkQueueSubmit(_queue, 1, &submitInfo, slot.Fence), "vkQueueSubmit");
             }
-            _submissionPending = true;
+            slot.Pending = true;
         }
 
-        /// <summary>Blocks until the most recent <see cref="Transition"/> has executed on the GPU (no-op if none is pending).</summary>
+        /// <summary>Blocks until every queued <see cref="Transition"/> has executed on the GPU (no-op if none is pending).</summary>
         public void WaitForCompletion()
         {
-            if (!_submissionPending)
+            for (int i = 0; i < _slots.Length; i++)
+                WaitForSlot(ref _slots[i]);
+        }
+
+        void WaitForSlot(ref Slot slot)
+        {
+            if (!slot.Pending)
                 return;
 
-            var fence = _fence;
+            var fence = slot.Fence;
             Check(_vkWaitForFences(_device, 1, &fence, 1, ulong.MaxValue), "vkWaitForFences");
             Check(_vkResetFences(_device, 1, &fence), "vkResetFences");
-            _submissionPending = false;
+            slot.Pending = false;
         }
 
         static void Check(int result, string call)
@@ -258,14 +290,21 @@ namespace SkiaGameRendering.Core.VK
             }
             finally
             {
-                if (_fence != 0)
-                    _vkDestroyFence(_device, _fence, IntPtr.Zero);
-                _fence = 0;
+                DestroySlots();
+            }
+        }
+
+        void DestroySlots()
+        {
+            for (int i = 0; i < _slots.Length; i++)
+            {
+                ref var slot = ref _slots[i];
+                if (slot.Fence != 0)
+                    _vkDestroyFence(_device, slot.Fence, IntPtr.Zero);
                 // Destroying the pool frees the command buffer allocated from it.
-                if (_commandPool != 0)
-                    _vkDestroyCommandPool(_device, _commandPool, IntPtr.Zero);
-                _commandPool = 0;
-                _commandBuffer = IntPtr.Zero;
+                if (slot.CommandPool != 0)
+                    _vkDestroyCommandPool(_device, slot.CommandPool, IntPtr.Zero);
+                slot = default;
             }
         }
 

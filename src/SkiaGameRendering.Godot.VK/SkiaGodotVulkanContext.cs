@@ -24,8 +24,10 @@ namespace SkiaGameRendering.Godot.VK
     /// method open with <c>ERR_RENDER_THREAD_GUARD</c>. Under the default
     /// <c>rendering/driver/threads/thread_model</c> ("Safe") the render thread IS the main thread,
     /// so <c>_Process</c>/<c>_Ready</c> qualify; under "Separate" the caller must go through
-    /// <see cref="RenderingServer.CallOnRenderThread"/>. <see cref="SkiaGodotRenderTarget2D.Begin"/>
-    /// checks <see cref="RenderingServer.IsOnRenderThread"/> and throws with that instruction.
+    /// <see cref="RenderingServer.CallOnRenderThread"/>. Every public entry point
+    /// (<see cref="SkiaGodotRenderer.Initialize"/>, the <see cref="SkiaGodotRenderTarget2D"/>
+    /// constructor, <see cref="SkiaGodotRenderTarget2D.Begin"/>) checks
+    /// <see cref="RenderingServer.IsOnRenderThread"/> and throws with that instruction.
     /// </item>
     /// <item>
     /// <b>Queue synchronization is by construction, not by lock.</b> Godot's own <c>vkQueueSubmit</c>
@@ -37,23 +39,31 @@ namespace SkiaGameRendering.Godot.VK
     /// one because Stride submits from multiple threads.)
     /// </item>
     /// <item>
-    /// <b>Godot tracks each texture's VkImageLayout itself, so Skia must not leave the image in a
-    /// layout Godot does not know about.</b> Godot's <c>RenderingDeviceGraph</c> derives the layout
-    /// purely from the last <c>ResourceUsage</c> it recorded for a texture: a texture Godot only ever
-    /// samples starts at <c>RESOURCE_USAGE_NONE</c> (layout <c>UNDEFINED</c>), gets one
-    /// <c>UNDEFINED -> SHADER_READ_ONLY_OPTIMAL</c> barrier the first frame it is drawn, and then
-    /// <b>never gets another barrier</b> (same usage, no write) - every later frame Godot samples it
-    /// with a descriptor that says <c>SHADER_READ_ONLY_OPTIMAL</c> and assumes it is still there.
-    /// Skia, meanwhile, leaves a wrapped render target in <c>COLOR_ATTACHMENT_OPTIMAL</c> and
-    /// SkiaSharp 3.119.4 cannot be asked for anything else (see <see cref="VkSkiaSurfaceFactory.EndDraw"/>).
-    /// <see cref="TransitionToShaderRead"/> therefore submits an explicit
+    /// <b>Godot tracks each texture's VkImageLayout itself, so both sides' bookkeeping must be kept
+    /// truthful every frame.</b> Godot's <c>RenderingDeviceGraph</c> derives the layout purely from
+    /// the last <c>ResourceUsage</c> it recorded for a texture and only emits a barrier when that
+    /// usage changes: a texture Godot merely samples gets ONE barrier into
+    /// <c>SHADER_READ_ONLY_OPTIMAL</c> and then never another. Skia, meanwhile, leaves a wrapped
+    /// render target in <c>COLOR_ATTACHMENT_OPTIMAL</c> and SkiaSharp 3.119.4 cannot be asked for
+    /// anything else (see <see cref="VkSkiaSurfaceFactory.EndDraw"/>). Three pieces keep the two in
+    /// agreement, all verified clean under Godot's <c>--gpu-validation</c> (Khronos validation layer):
+    /// <list type="number">
+    /// <item><see cref="PrimeForSampling"/> runs, at texture creation and before Skia's first draw, a
+    /// one-dispatch compute pass that samples the texture and then flushes and stalls the render
+    /// graph. That makes Godot's ONLY layout transition for the texture happen while it still holds
+    /// nothing - the first barrier's <c>oldLayout</c> is <c>UNDEFINED</c>, which the spec allows to
+    /// discard contents, and on tiled/mobile drivers it does. Without priming, a "draw once in
+    /// <c>_Ready</c>" texture would come up blank there.</item>
+    /// <item><see cref="TransitionToShaderRead"/> submits an explicit
     /// <c>COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL</c> barrier after every Skia flush
-    /// (via Core.VK's <see cref="VkImageLayoutTransitioner"/>), and <c>SkiaGodotTarget</c> re-wraps the
-    /// surface each frame with that layout as Skia's starting point, so both sides' bookkeeping
-    /// stays truthful every frame. The one remaining spec-permitted wrinkle is Godot's very first
-    /// barrier: transitioning FROM <c>UNDEFINED</c> allows a driver to discard contents, so on a
-    /// driver that does, the first displayed frame could be blank; redrawing every frame (the
-    /// normal pattern) hides it entirely, and no such driver has been observed (NVIDIA verified).
+    /// (Core.VK's <see cref="VkImageLayoutTransitioner"/>), and <c>SkiaGodotTarget</c> re-wraps the
+    /// surface each frame with that layout as Skia's starting point, so Skia's own first barrier of
+    /// the frame is correct too.</item>
+    /// <item><c>SkiaGodotTarget.BeginFrame</c> records a no-op 1x1 draw before the caller's, so a
+    /// frame with no other Skia work (a <c>Begin(clear: false)</c>/<c>End()</c> early-out) still
+    /// executes a render pass and really does leave the image in <c>COLOR_ATTACHMENT_OPTIMAL</c> -
+    /// otherwise the hand-back barrier's <c>oldLayout</c> would be a lie.</item>
+    /// </list>
     /// </item>
     /// <item>
     /// <b>The transfer-bit landmine Core.VK warns about is satisfied through RD usage bits.</b>
@@ -96,16 +106,34 @@ namespace SkiaGameRendering.Godot.VK
     /// </summary>
     internal sealed class SkiaGodotVulkanContext : IDisposable
     {
-        /// <summary><c>VK_MAKE_API_VERSION(0, 1, 2, 0)</c> - see this class's doc comment on API version.</summary>
-        const uint VK_API_VERSION_1_2 = (1u << 22) | (2u << 12);
-
         const uint ImageUsageFlags =
             VkConstants.ImageUsageTransferSrc | VkConstants.ImageUsageTransferDst |
             VkConstants.ImageUsageSampled | VkConstants.ImageUsageColorAttachment;
 
+        /// <summary>
+        /// The compute shader <see cref="PrimeForSampling"/> dispatches once per texture. It samples
+        /// the texture and writes the result to a storage buffer purely so the compiler cannot
+        /// optimize the sampler binding away (Godot's uniform-set creation would then reject a
+        /// binding the shader no longer declares). Compiled at runtime through Godot's own glslang,
+        /// the same path the engine's compute-shader tutorial uses in exported projects.
+        /// </summary>
+        const string PrimeShaderSource = """
+            #version 450
+            layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+            layout(set = 0, binding = 0) uniform sampler2D skia_texture;
+            layout(set = 0, binding = 1, std430) restrict buffer Sink { vec4 value; } sink;
+            void main() { sink.value = textureLod(skia_texture, vec2(0.5), 0.0); }
+            """;
+
         readonly VkSkiaSurfaceFactory _factory = new();
         VkImageLayoutTransitioner? _transitioner;
         RenderingDevice _renderingDevice = null!;
+
+        Rid _primeShader;
+        Rid _primePipeline;
+        Rid _primeSampler;
+        Rid _primeBuffer;
+        Rid _primeFlushTexture;
 
         internal RenderingDevice RenderingDevice => _renderingDevice;
 
@@ -120,10 +148,7 @@ namespace SkiaGameRendering.Godot.VK
                     "Set the project setting rendering/rendering_device/driver (and its .windows/.macos overrides) to \"vulkan\" - " +
                     "Godot 4.6+ defaults new Windows projects to d3d12 and macOS to metal - or run with --rendering-driver vulkan.");
 
-            if (!RenderingServer.IsOnRenderThread())
-                throw new InvalidOperationException(
-                    "SkiaGodotRenderer must be initialized on Godot's render thread. Under the default 'Safe' thread model " +
-                    "that is the main thread (_Ready/_Process); under 'Separate', wrap the call in RenderingServer.CallOnRenderThread.");
+            SkiaGodotRenderer.RequireRenderThread("SkiaGodotRenderer.Initialize");
 
             _renderingDevice = renderingDevice;
 
@@ -142,7 +167,9 @@ namespace SkiaGameRendering.Godot.VK
             if (queue == IntPtr.Zero)
                 throw new InvalidOperationException("Godot RenderingDevice returned a null VkQueue (DriverResource.CommandQueue).");
 
-            var apiVersion = Math.Min(VkSkiaSurfaceFactory.QueryApiVersion(instance, physicalDevice), VK_API_VERSION_1_2);
+            var apiVersion = Math.Min(
+                VkSkiaSurfaceFactory.QueryApiVersion(instance, physicalDevice),
+                VkConstants.MakeApiVersion(1, 2));
 
             _factory.InitializeFromNative(
                 instance, physicalDevice, device, queue,
@@ -187,7 +214,6 @@ namespace SkiaGameRendering.Godot.VK
                     RenderingDevice.TextureUsageBits.CanCopyFromBit |
                     RenderingDevice.TextureUsageBits.CanCopyToBit,
             };
-
             textureFormat.AddShareableFormat(format);
             if (srgbFormat is { } srgb)
                 textureFormat.AddShareableFormat(srgb);
@@ -198,25 +224,107 @@ namespace SkiaGameRendering.Godot.VK
             return rid;
         }
 
-        internal ulong GetImage(Rid texture) =>
-            _renderingDevice.GetDriverResource(RenderingDevice.DriverResource.Texture, texture, 0);
-
-        /// <param name="currentLayout">
-        /// The <c>VkImageLayout</c> the image is in right now - <see cref="VkConstants.ImageLayoutUndefined"/>
-        /// for a texture Godot just created (its <c>VkImageCreateInfo.initialLayout</c>), or
-        /// <see cref="VkConstants.ImageLayoutShaderReadOnlyOptimal"/> after <see cref="TransitionToShaderRead"/>.
-        /// </param>
-        internal VkTextureState CreateTextureState(Rid texture, uint currentLayout)
+        /// <summary>The texture's <c>VkImage</c> and <c>VkFormat</c>, straight from Godot's Vulkan driver.</summary>
+        internal (ulong image, uint format) GetImageAndFormat(Rid texture)
         {
-            var image = GetImage(texture);
+            var image = _renderingDevice.GetDriverResource(RenderingDevice.DriverResource.Texture, texture, 0);
             var format = (uint)_renderingDevice.GetDriverResource(RenderingDevice.DriverResource.TextureDataFormat, texture, 0);
             if (image == 0)
                 throw new InvalidOperationException("Godot RenderingDevice returned a null VkImage for the Skia texture (DriverResource.Texture).");
+            return (image, format);
+        }
 
-            return _factory.CreateTextureState(
+        /// <summary>
+        /// Makes Godot's render graph record <paramref name="texture"/> as a sampled texture, and
+        /// execute that transition, before Skia touches it - see item 1 of the layout discussion in
+        /// this class's doc comment. On return the image really is in
+        /// <c>SHADER_READ_ONLY_OPTIMAL</c>, Godot believes exactly that, and it will never move it
+        /// again on its own; the caller wraps it for Skia with that layout.
+        /// <para>
+        /// The flush is <see cref="RenderingDevice.TextureGetData"/> on a private 1x1 scratch texture:
+        /// Godot implements it as "record the copy, flush and stall for all frames, read back", which
+        /// executes everything recorded before it - the compute dispatch included - and waits. Done
+        /// on the scratch texture rather than <paramref name="texture"/> itself so the latter's
+        /// recorded usage stays TEXTURE_SAMPLE instead of ending on COPY_FROM.
+        /// </para>
+        /// </summary>
+        internal void PrimeForSampling(Rid texture)
+        {
+            EnsurePrimeResources();
+
+            var textureUniform = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 0 };
+            textureUniform.AddId(_primeSampler);
+            textureUniform.AddId(texture);
+            var sinkUniform = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
+            sinkUniform.AddId(_primeBuffer);
+
+            var uniformSet = _renderingDevice.UniformSetCreate([textureUniform, sinkUniform], _primeShader, 0);
+            if (!uniformSet.IsValid)
+                throw new InvalidOperationException("RenderingDevice.UniformSetCreate failed while priming the Skia texture for sampling.");
+            try
+            {
+                var computeList = _renderingDevice.ComputeListBegin();
+                _renderingDevice.ComputeListBindComputePipeline(computeList, _primePipeline);
+                _renderingDevice.ComputeListBindUniformSet(computeList, uniformSet, 0);
+                _renderingDevice.ComputeListDispatch(computeList, 1, 1, 1);
+                _renderingDevice.ComputeListEnd();
+
+                _renderingDevice.TextureGetData(_primeFlushTexture, 0);
+            }
+            finally
+            {
+                _renderingDevice.FreeRid(uniformSet);
+            }
+        }
+
+        void EnsurePrimeResources()
+        {
+            if (_primePipeline.IsValid)
+                return;
+
+            var source = new RDShaderSource { Language = RenderingDevice.ShaderLanguage.Glsl, SourceCompute = PrimeShaderSource };
+            var spirv = _renderingDevice.ShaderCompileSpirVFromSource(source, allowCache: false);
+            if (!string.IsNullOrEmpty(spirv.CompileErrorCompute))
+                throw new InvalidOperationException("Failed to compile the texture-priming compute shader: " + spirv.CompileErrorCompute);
+
+            _primeShader = _renderingDevice.ShaderCreateFromSpirV(spirv, "SkiaGameRendering.Godot.VK prime");
+            if (!_primeShader.IsValid)
+                throw new InvalidOperationException("RenderingDevice.ShaderCreateFromSpirV failed for the texture-priming compute shader.");
+
+            _primePipeline = _renderingDevice.ComputePipelineCreate(_primeShader);
+            if (!_primePipeline.IsValid)
+                throw new InvalidOperationException("RenderingDevice.ComputePipelineCreate failed for the texture-priming compute shader.");
+
+            _primeSampler = _renderingDevice.SamplerCreate(new RDSamplerState());
+            _primeBuffer = _renderingDevice.StorageBufferCreate(16);
+
+            var scratch = new RDTextureFormat
+            {
+                Format = RenderingDevice.DataFormat.R8G8B8A8Unorm,
+                Width = 1,
+                Height = 1,
+                Depth = 1,
+                ArrayLayers = 1,
+                Mipmaps = 1,
+                TextureType = RenderingDevice.TextureType.Type2D,
+                Samples = RenderingDevice.TextureSamples.Samples1,
+                UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit,
+            };
+            _primeFlushTexture = _renderingDevice.TextureCreate(scratch, new RDTextureView());
+
+            if (!_primeSampler.IsValid || !_primeBuffer.IsValid || !_primeFlushTexture.IsValid)
+                throw new InvalidOperationException("RenderingDevice failed to create the texture-priming helper resources.");
+        }
+
+        /// <param name="currentLayout">
+        /// The <c>VkImageLayout</c> the image is in right now - always
+        /// <see cref="VkConstants.ImageLayoutShaderReadOnlyOptimal"/> for a texture this class manages,
+        /// both after <see cref="PrimeForSampling"/> and after <see cref="TransitionToShaderRead"/>.
+        /// </param>
+        internal VkTextureState CreateTextureState(ulong image, uint format, uint currentLayout) =>
+            _factory.CreateTextureState(
                 image, format, currentLayout, ImageUsageFlags,
                 imageTiling: 0 /* VK_IMAGE_TILING_OPTIMAL - Godot's texture_create always uses optimal tiling. */);
-        }
 
         internal (SKSurface surface, GRBackendRenderTarget renderTarget) CreateSurface(
             VkTextureState state, int width, int height, SKColorType colorType) =>
@@ -224,7 +332,20 @@ namespace SkiaGameRendering.Godot.VK
 
         internal void BeginDraw() => _factory.BeginDraw();
 
-        internal void EndDraw() => _factory.EndDraw();
+        /// <summary>
+        /// Submits Skia's work WITHOUT waiting for the GPU (see <see cref="VkSkiaSurfaceFactory.EndDraw"/>):
+        /// Godot's own use of the image is its frame submit on the same queue, later in the frame, so
+        /// queue order alone guarantees it sees the finished draw. Measured on the stress scenario,
+        /// the synchronous variant cost most of a 60Hz frame in CPU stalls for three targets.
+        /// </summary>
+        internal void EndDraw() => _factory.EndDraw(synchronous: false);
+
+        /// <summary>
+        /// Blocks until the most recent hand-back barrier (and therefore, by queue order, every Skia
+        /// submission before it) has executed. Used before releasing a texture, so nothing in flight
+        /// still references the <c>VkImage</c> when Godot frees it.
+        /// </summary>
+        internal void WaitForPendingGpuWork() => _transitioner?.WaitForCompletion();
 
         /// <summary>
         /// Moves <paramref name="image"/> from the <c>COLOR_ATTACHMENT_OPTIMAL</c> Skia leaves it in
@@ -250,6 +371,22 @@ namespace SkiaGameRendering.Godot.VK
             _transitioner?.Dispose();
             _transitioner = null;
             _factory.Dispose();
+
+            if (_renderingDevice != null)
+            {
+                FreeIfValid(ref _primePipeline);
+                FreeIfValid(ref _primeShader);
+                FreeIfValid(ref _primeSampler);
+                FreeIfValid(ref _primeBuffer);
+                FreeIfValid(ref _primeFlushTexture);
+            }
+        }
+
+        void FreeIfValid(ref Rid rid)
+        {
+            if (rid.IsValid)
+                _renderingDevice.FreeRid(rid);
+            rid = default;
         }
     }
 }

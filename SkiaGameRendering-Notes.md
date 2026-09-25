@@ -335,10 +335,17 @@ The fix is the "host inserts its own barrier" fallback Core.VK already prescribe
 `COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL` barrier on Godot's queue, and `Begin()`
 re-wraps the `GRBackendRenderTarget`/`SKSurface` each frame with that layout as Skia's starting
 point (Skia caches the last layout it set, so a persistent surface would skip its own transition
-back to `COLOR_ATTACHMENT_OPTIMAL`). Verified clean under Godot's `--gpu-validation` (Khronos
-validation layer 1.3.261.1): zero layout errors. The one remaining spec-permitted loose end is
-Godot's own first `UNDEFINED`-sourced barrier, which allows content discard; per-frame redraw makes
-it invisible, and no driver has been seen to discard.
+back to `COLOR_ATTACHMENT_OPTIMAL`). Two more details close the remaining holes. Godot's single
+barrier for the texture has `oldLayout = UNDEFINED`, which the spec allows to discard contents and
+tiled/mobile drivers do; so the constructor runs a one-dispatch compute shader that samples the
+texture and then flushes and stalls the graph (`texture_get_data` on a 1x1 scratch texture is
+Godot's public "execute everything recorded so far and wait"), making that transition happen
+before Skia ever draws and leaving Godot's tracker on TEXTURE_SAMPLE for good. And `Begin()`
+records a 1x1 modulate-by-white draw so a frame with no other Skia work still executes a render
+pass and really ends in `COLOR_ATTACHMENT_OPTIMAL` - otherwise the hand-back barrier's
+`oldLayout` would be wrong for a `Begin(clear: false)`/`End()` early-out. Verified clean under
+Godot's `--gpu-validation` (Khronos validation layer 1.3.261.1) across the sample and a scenario
+suite covering no-draw frames, dispose/recreate, multiple targets and the Separate thread model.
 
 A second validation finding: `Texture2DRD` creates an sRGB view of the image, which is only legal on
 an image created with `VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT` (VUID-VkImageViewCreateInfo-image-01762).
@@ -351,8 +358,26 @@ UNORM and sRGB twins.
 default `rendering/driver/threads/thread_model` ("Safe") the render thread is the main thread and
 Godot submits once per frame in `RS::draw`, after `_Process` - so Skia submits from `_Process` are
 serialized with Godot's by construction and no queue lock is wired through (Godot's own per-queue
-`submit_mutex` is unreachable from C# anyway). Under "Separate", `RenderingServer.CallOnRenderThread`
-is required; `Begin` checks `RenderingServer.IsOnRenderThread()` and throws with that instruction.
+`submit_mutex` is unreachable from C# anyway). Under "Separate" (experimental in Godot, verified with
+`--render-thread separate`), construction, `Begin`/`End` and `Initialize` must go through
+`RenderingServer.CallOnRenderThread`; every entry point checks `RenderingServer.IsOnRenderThread()`
+and throws with that instruction. `Dispose` is the one call that has to straddle both threads there:
+clearing `Texture2DRD.texture_rd_rid` emits `changed`, and a `Sprite2D` showing the texture answers
+with `queue_redraw`, which Godot only allows from the node's thread (the main thread), while freeing
+the RD texture must happen on the render thread. So `SkiaGodotRenderTarget2D.Dispose` runs the half
+that belongs to the calling thread immediately and hands the other half over (`CallOnRenderThread`
+or `CallDeferred`), and the Texture2DRD wrapper itself is never `Dispose()`d - it is a refcounted
+resource other nodes may still hold.
+
+Nothing per frame waits on the GPU. `End()` submits Skia's work asynchronously
+(`VkSkiaSurfaceFactory.EndDraw(synchronous: false)`, a new option; Stride keeps the synchronous
+default), because Godot's own sampling of the texture is its frame submit on the same queue, later
+in the frame, and queue order alone makes it see the finished draw. The hand-back barrier goes
+through a ring of eight command buffers in `VkImageLayoutTransitioner`, so a call only waits when
+eight transitions are still in flight; the only deliberate stall is in `Dispose`, before Godot frees
+the `VkImage`. A note on Godot's Texture2DRD: assigning an invalid RID frees its RenderingServer view
+and zeroes its size but leaves `texture_rd_rid` reporting the old value (`texture_rd.cpp`), so size
+is the observable signal that a texture was detached.
 
 ### Other findings
 
@@ -376,6 +401,16 @@ is required; `Begin` checks `RenderingServer.IsOnRenderThread()` and throws with
   test this adapter is a real Godot window. `tests/Tests.Godot.VK` launches the engine against the
   sample with a `--screenshot` user argument and probes the PNG; it runs only when `GODOT_BIN`
   points at a Godot .NET executable and skips otherwise. CI does not download Godot.
+- Beyond the sample, the adapter was exercised as a real NuGet package (packed, restored from a
+  local feed into a fresh `Godot.NET.Sdk` project) through a scenario suite: several targets at
+  once on `Sprite2D`, `TextureRect` and `_Draw()`/`DrawTexture`; a BGRA target; transparent clears
+  with the premultiplied material (half-alpha pixels blend to the expected value); dispose and
+  recreate mid-run; a draw-once texture still intact 60 frames later; every misuse path (Begin
+  twice, End before Begin, Dispose mid-frame, use after Dispose, off-thread calls, double Initialize);
+  200 create/draw/dispose cycles with no RID leak; 600 frames with three targets (flat managed and
+  RD memory); the Separate thread model end to end; and the D3D12 / Compatibility error messages.
+  All of it clean under `--gpu-validation`. That suite lives outside the repo (it needs a Godot
+  binary); the pieces worth keeping are the sample, the `GODOT_BIN` test, and this list.
 - Prior art: no GPU-path Skia integration for Godot existed. The published Godot+SkiaSharp projects
   are CPU readback (`SKBitmap` -> `ImageTexture`), and other external renderers embedded in Godot
   (Servo, Rive) share *memory* (external-memory handles) rather than the logical device.

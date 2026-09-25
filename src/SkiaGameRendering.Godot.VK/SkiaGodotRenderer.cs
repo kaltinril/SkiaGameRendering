@@ -28,7 +28,8 @@ namespace SkiaGameRendering.Godot.VK
             renderingDevice ??= RenderingServer.GetRenderingDevice()
                 ?? throw new InvalidOperationException(
                     "RenderingServer.GetRenderingDevice() returned null. SkiaGameRendering.Godot.VK needs the Forward+ or Mobile " +
-                    "renderer (rendering/renderer/rendering_method); the Compatibility (OpenGL) renderer and headless mode have no RenderingDevice.");
+                    "renderer (rendering/renderer/rendering_method) on the Vulkan driver; the Compatibility (OpenGL) renderer and " +
+                    "headless mode have no RenderingDevice.");
 
             if (_context != null)
                 throw new InvalidOperationException(
@@ -48,6 +49,21 @@ namespace SkiaGameRendering.Godot.VK
         }
 
         /// <summary>
+        /// Throws unless the caller is on Godot's render thread - the main thread under the default
+        /// "Safe" thread model, a dedicated thread under "Separate". Every <see cref="RenderingDevice"/>
+        /// call this library makes is guarded by Godot with <c>ERR_RENDER_THREAD_GUARD</c>, which
+        /// prints an error and returns a null result; checking first turns that into an exception
+        /// that says what to do instead.
+        /// </summary>
+        internal static void RequireRenderThread(string what)
+        {
+            if (!RenderingServer.IsOnRenderThread())
+                throw new InvalidOperationException(
+                    what + " must run on Godot's render thread. Under the default 'Safe' thread model that is the main " +
+                    "thread (_Ready/_Process/_Draw); under 'Separate', wrap the call in RenderingServer.CallOnRenderThread.");
+        }
+
+        /// <summary>
         /// Called by <see cref="SkiaGodotRenderTarget2D"/>'s constructor. Auto-initializes against
         /// Godot's global <see cref="RenderingDevice"/> if nothing has initialized the renderer yet.
         /// </summary>
@@ -60,7 +76,8 @@ namespace SkiaGameRendering.Godot.VK
 
         /// <summary>
         /// Disposes the shared context. Dispose any live <see cref="SkiaGodotRenderTarget2D"/>
-        /// instances first - this does not track or dispose them for you.
+        /// instances first - this does not track or dispose them for you. Under the "Separate" thread
+        /// model, calling this from the main thread queues the teardown onto the render thread.
         /// </summary>
         public static void Dispose()
         {
@@ -69,7 +86,10 @@ namespace SkiaGameRendering.Godot.VK
 
             var context = _context;
             _context = null;
-            context.Dispose();
+            if (RenderingServer.IsOnRenderThread())
+                context.Dispose();
+            else
+                RenderingServer.CallOnRenderThread(Callable.From(context.Dispose));
         }
     }
 }

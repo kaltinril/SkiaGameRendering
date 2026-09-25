@@ -99,11 +99,9 @@ namespace SkiaGameRendering.Core.VK
         /// </summary>
         internal static unsafe uint QueryApiVersion(IntPtr instance, IntPtr physicalDevice)
         {
-            const uint VK_API_VERSION_1_0 = 1u << 22;
-
             // vkEnumerateInstanceVersion is a global (instance-less) command that only exists on
             // Vulkan 1.1+ loaders; a 1.0 loader has no entry point for it and is, by definition, 1.0.
-            uint instanceVersion = VK_API_VERSION_1_0;
+            uint instanceVersion = VkConstants.MakeApiVersion(1, 0);
             var enumerateInstanceVersion = vkGetInstanceProcAddr(IntPtr.Zero, "vkEnumerateInstanceVersion");
             if (enumerateInstanceVersion != IntPtr.Zero)
             {

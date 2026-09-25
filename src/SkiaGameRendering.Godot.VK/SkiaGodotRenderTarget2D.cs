@@ -28,12 +28,20 @@ namespace SkiaGameRendering.Godot.VK
         SkiaGodotTarget? _target;
         bool _hasBegun;
 
+        /// <summary>
+        /// Allocates a fixed-size texture. Must be called on Godot's render thread (see the class
+        /// doc comment); auto-initializes <see cref="SkiaGodotRenderer"/> against Godot's global
+        /// <see cref="RenderingDevice"/> on first use. The constructor stalls the GPU briefly once,
+        /// to hand the new texture to Godot in a known state - create targets up front, not per frame.
+        /// </summary>
         public SkiaGodotRenderTarget2D(int width, int height, SKColorType colorType = SKColorType.Rgba8888)
         {
             if (width <= 0)
                 throw new ArgumentOutOfRangeException(nameof(width));
             if (height <= 0)
                 throw new ArgumentOutOfRangeException(nameof(height));
+
+            SkiaGodotRenderer.RequireRenderThread("The SkiaGodotRenderTarget2D constructor");
 
             Width = width;
             Height = height;
@@ -54,9 +62,11 @@ namespace SkiaGameRendering.Godot.VK
             (_target ?? throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D))).Texture;
 
         /// <summary>
-        /// The underlying <see cref="RenderingDevice"/> texture RID, for callers working at the RD
-        /// level (e.g. binding it in a compute shader's uniform set). Owned by this object; do not
-        /// free it.
+        /// The underlying <see cref="RenderingDevice"/> texture RID, for <b>sampling</b> at the RD level
+        /// (e.g. as a <c>SamplerWithTexture</c> uniform in your own shader). Owned by this object; do
+        /// not free it. Do not copy to or from it, clear it, or bind it as a storage image through
+        /// <see cref="RenderingDevice"/>: Godot's render graph would then move it out of the sampled
+        /// layout this object keeps it in, and Skia's next draw would start from a wrong layout.
         /// </summary>
         public Rid TextureRid =>
             (_target ?? throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D))).TextureRid;
@@ -70,7 +80,8 @@ namespace SkiaGameRendering.Godot.VK
             : throw new InvalidOperationException("Begin must be called before accessing Canvas.");
 
         /// <summary>
-        /// Begins a render pass. Throws if a previous <see cref="Begin"/> hasn't been closed with
+        /// Begins a render pass. With <paramref name="clear"/> false the previous contents are kept
+        /// and drawn over. Throws if a previous <see cref="Begin"/> hasn't been closed with
         /// <see cref="End"/> yet, or if called off Godot's render thread.
         /// </summary>
         public void Begin(bool clear = true)
@@ -79,10 +90,7 @@ namespace SkiaGameRendering.Godot.VK
                 throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D));
             if (_hasBegun)
                 throw new InvalidOperationException("Begin cannot be called again until End has been called.");
-            if (!RenderingServer.IsOnRenderThread())
-                throw new InvalidOperationException(
-                    "SkiaGodotRenderTarget2D must be used on Godot's render thread. Under the default 'Safe' thread model " +
-                    "that is the main thread (_Process/_Draw); under 'Separate', wrap the Begin/End block in RenderingServer.CallOnRenderThread.");
+            SkiaGodotRenderer.RequireRenderThread("SkiaGodotRenderTarget2D.Begin");
 
             var surface = _target.BeginFrame();
             _hasBegun = true;
@@ -124,6 +132,12 @@ namespace SkiaGameRendering.Godot.VK
         /// <summary>
         /// Releases the RD texture and Skia surface. Throws if called between <see cref="Begin"/>
         /// and <see cref="End"/>. Nodes still displaying <see cref="Texture"/> show nothing afterward.
+        /// <para>
+        /// Under the default "Safe" thread model this completes synchronously. Under "Separate",
+        /// disposal has a main-thread half (detaching the texture from the scene) and a render-thread
+        /// half (freeing GPU resources); called from either thread, this runs its own half now and
+        /// hands the other to the right thread, so the GPU release finishes a frame or so later.
+        /// </para>
         /// </summary>
         public void Dispose()
         {
@@ -132,8 +146,34 @@ namespace SkiaGameRendering.Godot.VK
             if (_hasBegun)
                 throw new InvalidOperationException("Dispose cannot be called between Begin and End; call End first.");
 
-            _target.Dispose();
+            var target = _target;
             _target = null;
+
+            bool onRenderThread = RenderingServer.IsOnRenderThread();
+            bool onMainThread = OS.GetThreadCallerId() == OS.GetMainThreadId();
+
+            if (onRenderThread && onMainThread)
+            {
+                target.Dispose();
+            }
+            else if (onMainThread)
+            {
+                target.ReleaseSceneTexture();
+                RenderingServer.CallOnRenderThread(Callable.From(target.Dispose));
+            }
+            else if (onRenderThread)
+            {
+                Callable.From(() =>
+                {
+                    target.ReleaseSceneTexture();
+                    RenderingServer.CallOnRenderThread(Callable.From(target.Dispose));
+                }).CallDeferred();
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    "SkiaGodotRenderTarget2D.Dispose must be called from Godot's main thread or its render thread.");
+            }
         }
     }
 }

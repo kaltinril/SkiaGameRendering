@@ -21,6 +21,15 @@ not go through `SkiaBackend`/`SkiaRenderer` - see
 dotnet add package SkiaGameRendering.Godot.VK
 ```
 
+Not on nuget.org yet. Until it is published, clone this repo and reference the project from your
+game's `.csproj` instead; the package's dependencies (`SkiaSharp`, `GodotSharp`) restore normally:
+
+```xml
+<ItemGroup>
+  <ProjectReference Include="path\to\SkiaGameRendering\src\SkiaGameRendering.Godot.VK\SkiaGameRendering.Godot.VK.csproj" />
+</ItemGroup>
+```
+
 ## Pin the project to Vulkan
 
 Godot 4.6+ configures **new** Windows projects to use the `d3d12` driver and macOS to use `metal`.
@@ -90,10 +99,11 @@ public partial class SkiaOverlay : Node2D
 }
 ```
 
-`Begin`/`End` must run on Godot's render thread. Under the default
-`rendering/driver/threads/thread_model` ("Safe") that is the main thread, so `_Ready`, `_Process`
-and `_Draw` all qualify. Under "Separate", wrap the `Begin`/`End` block in
-`RenderingServer.CallOnRenderThread`; `Begin` throws with that instruction otherwise.
+`Begin`/`End`, the constructor, and `SkiaGodotRenderer.Initialize` must run on Godot's render
+thread. Under the default `rendering/driver/threads/thread_model` ("Safe") that is the main thread,
+so `_Ready`, `_Process` and `_Draw` all qualify. Under "Separate" (experimental in Godot), wrap them
+in `RenderingServer.CallOnRenderThread`; they throw with that instruction otherwise. `Dispose` can
+be called from either thread.
 
 Full member list and other remarks are documented on
 [SkiaGodotRenderTarget2D](../documentation/SkiaGodotRenderTarget2D.md).
@@ -123,10 +133,16 @@ executable to enable that test; it skips otherwise).
 - **HDR 2D** (`rendering/viewport/hdr_2d`) is not compensated for: the texture is a plain UNORM
   format holding Skia's sRGB-encoded bytes, which is exactly right for Godot's default gamma-space
   2D pipeline.
-- **One extra queue submission per `End()`.** Godot tracks each texture's Vulkan image layout
-  itself and SkiaSharp cannot be told which layout to leave an image in, so `End()` submits a small
-  barrier to hand the texture back in the layout Godot expects, and `Begin()` re-wraps the Skia
-  surface each frame. See the documentation page for the full mechanism.
+- **One extra queue submission per `End()`, and a one-time GPU stall per constructor.** Godot
+  tracks each texture's Vulkan image layout itself and SkiaSharp cannot be told which layout to
+  leave an image in, so `End()` submits a small barrier to hand the texture back in the layout
+  Godot expects, `Begin()` re-wraps the Skia surface each frame, and the constructor runs a tiny
+  compute pass and waits for it so Godot records the texture as sampled before Skia's first draw.
+  Create targets up front, not per frame. Per-frame work never waits on the GPU. See the
+  documentation page for the full mechanism.
+- **`TextureRid` is for sampling only.** Binding it in your own shader is fine; copying to or from
+  it, clearing it, or using it as a storage image through `RenderingDevice` moves it out of the
+  layout this library keeps it in.
 - Verified on Windows with an NVIDIA GPU under Godot 4.7.2, including a clean run under Godot's
   `--gpu-validation` (Khronos validation layer). Linux and macOS are expected to work identically
   (same public API, same Skia Vulkan path Stride uses there) but have not been run.

@@ -23,13 +23,12 @@ public class GodotSampleTests
         var godot = Environment.GetEnvironmentVariable(GodotBinaryFactAttribute.EnvironmentVariable)!;
         var sampleDir = FindSampleDirectory();
 
-        // Godot (run outside the editor) loads the project assembly from .godot/mono/temp/bin/Debug
-        // regardless of how this test project was built, so a Release-only build of the sample is
-        // invisible to it. The ProjectReference in Tests.Godot.VK.csproj builds the sample in the
-        // test's own configuration; make the mismatch a clear failure rather than a Godot crash.
+        // Godot (run outside the editor) loads the project assembly from .godot/mono/temp/bin/Debug;
+        // Tests.Godot.VK.csproj's ProjectReference pins the sample build to Debug for that reason.
+        // Check anyway, so a missing build fails here with a message instead of as a Godot crash.
         var assembly = Path.Combine(sampleDir, ".godot", "mono", "temp", "bin", "Debug", "Sample.Godot.VK.dll");
         Assert.True(File.Exists(assembly),
-            $"Sample assembly not found at {assembly}. Build samples/Sample.Godot.VK in Debug first (dotnet build -c Debug).");
+            $"Sample assembly not found at {assembly}. Build samples/Sample.Godot.VK first (any configuration of this test project builds it in Debug).");
 
         var screenshot = Path.Combine(Path.GetTempPath(), $"skiagamerendering-godot-{Guid.NewGuid():N}.png");
         try
