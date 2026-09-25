@@ -7,9 +7,9 @@ namespace Tests.Godot;
 /// <summary>
 /// Launches the real Godot binary (<see cref="GodotBinaryFactAttribute"/>) against
 /// <c>samples/Sample.Godot</c> on each supported rendering driver, with the sample's <c>--screenshot</c>
-/// user argument, then checks the PNG it writes: the shared sample scene is a red circle of radius
-/// min(w,h)/2, centered, over a CornflowerBlue clear, so the center pixel must be pure red and every
-/// corner pure blue. Solid fills are driver-independent, unlike anti-aliased edges, which is why
+/// user argument, then checks the PNG it writes against the shared scene's layout (see
+/// <c>samples/Shared/Scene.cs</c>): the red circle, the SVG drop, and the CornflowerBlue clear
+/// everywhere else. Solid fills are driver-independent, unlike anti-aliased edges, which is why
 /// this probes pixels instead of comparing a golden image (the window size also varies with the
 /// host's display scaling).
 /// </summary>
@@ -62,15 +62,23 @@ public class GodotSampleTests
             int w = bitmap.Width, h = bitmap.Height;
             Assert.True(w > 100 && h > 100, $"Unexpectedly small screenshot: {w}x{h}");
 
-            AssertPixel(bitmap, w / 2, h / 2, Red, "center (inside the circle)");
+            // Scene's grid: square cells half the shorter side wide, the circle in the first (top-left)
+            // and the SVG drop in the second, each inset by a tenth of a cell.
+            int cell = Math.Min(w, h) / 2;
+            int radius = cell / 2 - cell / 10;
+            AssertPixel(bitmap, cell / 2, cell / 2, Red, "circle center");
+            AssertPixel(bitmap, cell / 2 - radius + 6, cell / 2, Red, "just inside the circle's left edge");
+            // The same spot mirrored top-to-bottom: red there means the copy is flipped.
+            AssertPixel(bitmap, cell / 2, h - 1 - cell / 2, CornflowerBlue, "circle center mirrored vertically (clear color)");
             AssertPixel(bitmap, 2, 2, CornflowerBlue, "top-left corner (clear color)");
             AssertPixel(bitmap, w - 3, 2, CornflowerBlue, "top-right corner (clear color)");
             AssertPixel(bitmap, 2, h - 3, CornflowerBlue, "bottom-left corner (clear color)");
             AssertPixel(bitmap, w - 3, h - 3, CornflowerBlue, "bottom-right corner (clear color)");
-            // Just inside the circle's leftmost point: catches a vertically flipped or offset copy
-            // that a center probe alone would miss.
-            int radius = Math.Min(w, h) / 2;
-            AssertPixel(bitmap, w / 2 - radius + 6, h / 2, Red, "left edge of the circle");
+
+            // The drop is a blue gradient, close to the clear color, so check the red channel
+            // rather than an exact value: about 50 at the drop's middle against the clear's 100.
+            var drop = bitmap.GetPixel(cell + cell / 2, cell / 2);
+            Assert.True(drop.Red < 80 && drop.Blue > 150, $"SVG drop center at ({cell + cell / 2},{cell / 2}): expected the drop's blue gradient, got {drop}.");
         }
         finally
         {
