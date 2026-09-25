@@ -55,7 +55,7 @@ namespace SkiaGameRendering.Core.VK
     /// lock out of nothing - the host already owns whatever lock object serializes its own submissions
     /// (e.g. Stride's internal <c>GraphicsDevice.QueueLock</c>). <see cref="InitializeFromNative"/>
     /// therefore takes an optional <c>acquireQueueLock</c> hook: a <see cref="Func{IDisposable}"/> that
-    /// <see cref="BeginDraw"/>/<see cref="EndDraw"/> invoke/dispose around the one call that actually
+    /// <see cref="BeginDraw"/>/<see cref="EndDraw(bool)"/> invoke/dispose around the one call that actually
     /// submits to the queue (<c>GRContext.Flush(submit: true, ...)</c>). Passing <c>null</c> means "no
     /// external synchronization" - fine for a single-threaded test harness or a host that guarantees
     /// no concurrent submission on its own, but the caller's responsibility either way; this library
@@ -63,7 +63,7 @@ namespace SkiaGameRendering.Core.VK
     /// </item>
     /// <item>
     /// <b>The post-draw <c>VkImageLayout</c> cannot be read back through this SkiaSharp version.</b>
-    /// See the doc comment on <see cref="EndDraw"/> - this was verified by reflecting SkiaSharp
+    /// See the doc comment on <see cref="EndDraw(bool)"/> - this was verified by reflecting SkiaSharp
     /// 3.119.4's actual native P/Invoke surface, not assumed from its public API docs.
     /// </item>
     /// </list>
@@ -94,6 +94,20 @@ namespace SkiaGameRendering.Core.VK
             if (physicalDevice == IntPtr.Zero)
                 throw new ArgumentException("Vulkan physical device native pointer is null.", nameof(physicalDevice));
             return VulkanNative.QueryApiVersion(instance, physicalDevice);
+        }
+
+        /// <summary>
+        /// The <c>VkQueueFlags</c> of each of <paramref name="physicalDevice"/>'s queue families,
+        /// indexed by family. Lets a host adapter work out which families its engine put other
+        /// queues on, so it can tell whether Skia's submits share a <c>VkQueue</c> with them.
+        /// </summary>
+        public static uint[] QueryQueueFamilyFlags(IntPtr instance, IntPtr physicalDevice)
+        {
+            if (instance == IntPtr.Zero)
+                throw new ArgumentException("Vulkan instance native pointer is null.", nameof(instance));
+            if (physicalDevice == IntPtr.Zero)
+                throw new ArgumentException("Vulkan physical device native pointer is null.", nameof(physicalDevice));
+            return VulkanNative.QueryQueueFamilyFlags(instance, physicalDevice);
         }
 
         /// <param name="instance">The host engine's <c>VkInstance</c>.</param>
@@ -195,7 +209,7 @@ namespace SkiaGameRendering.Core.VK
         /// <param name="imageLayout">
         /// The image's CURRENT <c>VkImageLayout</c> at the moment this call is made - Skia reads this
         /// once, as an input, to know what layout to transition from for its first internal barrier.
-        /// See <see cref="EndDraw"/> for why this library cannot report back what layout the image
+        /// See <see cref="EndDraw(bool)"/> for why this library cannot report back what layout the image
         /// ends up in afterward.
         /// </param>
         /// <param name="imageUsageFlags">
@@ -318,27 +332,28 @@ namespace SkiaGameRendering.Core.VK
         /// <summary>
         /// Acquires the host's queue lock (if one was wired through <c>acquireQueueLock</c> on
         /// <see cref="InitializeFromNative"/>) before any drawing happens. Paired with
-        /// <see cref="EndDraw"/>.
+        /// <see cref="EndDraw(bool)"/>.
         /// </summary>
         public void BeginDraw()
         {
             _queueLockHandle = _acquireQueueLock?.Invoke();
         }
 
+        /// <summary>Same as <see cref="EndDraw(bool)"/> with <c>synchronous: true</c>.</summary>
+        public void EndDraw() => EndDraw(synchronous: true);
+
         /// <summary>
         /// Flushes Skia's recorded Vulkan commands and submits them to the shared <c>VkQueue</c>
         /// (<c>GRContext.Flush(submit: true, synchronous)</c>) - the one call in this whole
         /// class that actually calls <c>vkQueueSubmit</c>, which is why it (and not, say,
         /// <see cref="CreateSurface"/>) is what <see cref="BeginDraw"/>'s queue lock brackets.
-        /// <paramref name="synchronous"/> <c>true</c> (the default) blocks until the GPU finishes,
+        /// <paramref name="synchronous"/> <c>true</c> (what <see cref="EndDraw()"/> passes) blocks until the GPU finishes,
         /// matching <c>AngleSkiaSurfaceFactory.UnbindAfterDrawing</c>'s <c>glFinish()</c> call and for
         /// the same reason: a host about to read the image from the CPU, or to consume it on a
         /// different queue, needs the GPU work to have actually landed first. A host whose own
         /// consumption of the image is submitted to the SAME <c>VkQueue</c> afterward (Godot samples
         /// it in its frame submit, which is queue-ordered behind this one) can pass <c>false</c> and
         /// skip the stall; Skia still recycles its command buffers safely through its own fences.
-        /// The Godot adapter runs this way and is verified clean under the Vulkan validation layer;
-        /// Stride keeps the synchronous default.
         /// <para>
         /// <b>This cannot tell the caller what <c>VkImageLayout</c> the image ends up in.</b> Verified
         /// directly against SkiaSharp 3.119.4's native P/Invoke surface (<c>SkiaApi</c>), not assumed:
@@ -358,13 +373,13 @@ namespace SkiaGameRendering.Core.VK
         /// drawn into must sit in <c>VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL</c> (or
         /// <c>VK_IMAGE_LAYOUT_GENERAL</c>) while Skia's draw commands execute, per the Vulkan spec,
         /// and nothing in this flush path transitions it anywhere else afterward - so
-        /// <c>COLOR_ATTACHMENT_OPTIMAL</c> is the ASSUMED post-<see cref="EndDraw"/> layout for such
+        /// <c>COLOR_ATTACHMENT_OPTIMAL</c> is the ASSUMED post-<see cref="EndDraw(bool)"/> layout for such
         /// an image, not a value this library can verify or guarantee. A host needing certainty must
         /// insert its own <c>vkCmdPipelineBarrier</c> (with whatever queue-ownership transfer it
         /// needs) rather than trust a reported value, since none exists.
         /// </para>
         /// </summary>
-        public void EndDraw(bool synchronous = true)
+        public void EndDraw(bool synchronous)
         {
             try
             {

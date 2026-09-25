@@ -34,16 +34,17 @@ namespace SkiaGameRendering.Godot
         /// <summary>
         /// On D3D12, whether Godot's device runs with enhanced barriers (which changes how Godot
         /// tracks texture state and therefore which state this library hands textures back in - see
-        /// <see cref="D3D12GodotBackend"/>). <c>null</c> before <see cref="Initialize"/> or on Vulkan.
+        /// <see cref="D3D12GodotBackend"/>). <c>null</c> before <see cref="Initialize"/> and on the
+        /// other drivers.
         /// Worth including in a bug report.
         /// </summary>
         public static bool? D3D12UsesEnhancedBarriers => (_backend as D3D12GodotBackend)?.EnhancedBarriers;
 
         /// <param name="renderingDevice">
         /// The device to render on; <c>null</c> (the default) means Godot's global one,
-        /// <see cref="RenderingServer.GetRenderingDevice"/>. A local device from
-        /// <see cref="RenderingServer.CreateLocalRenderingDevice"/> is accepted but its textures
-        /// cannot be shown in the scene tree, by Godot's own rules.
+        /// <see cref="RenderingServer.GetRenderingDevice"/>, which is also the only device accepted:
+        /// a local device from <see cref="RenderingServer.CreateLocalRenderingDevice"/> throws
+        /// <see cref="NotSupportedException"/>, because its textures cannot be shown in the scene tree.
         /// </param>
         public static void Initialize(RenderingDevice? renderingDevice = null)
         {
@@ -113,21 +114,56 @@ namespace SkiaGameRendering.Godot
         }
 
         /// <summary>
-        /// Disposes the shared backend. Dispose any live <see cref="SkiaGodotRenderTarget2D"/>
-        /// instances first - this does not track or dispose them for you. Under the "Separate" thread
-        /// model, calling this from the main thread queues the teardown onto the render thread.
+        /// Disposes the shared backend and every <see cref="SkiaGodotRenderTarget2D"/> still alive on
+        /// it; using one of those afterward throws <see cref="ObjectDisposedException"/>. Under the
+        /// "Separate" thread model, calling this from the main thread queues the GPU teardown onto
+        /// the render thread.
         /// </summary>
         public static void Dispose()
         {
             if (_backend == null)
                 return;
 
+            bool onRenderThread = RenderingServer.IsOnRenderThread();
+            bool onMainThread = OS.GetThreadCallerId() == OS.GetMainThreadId();
+            if (!onRenderThread && !onMainThread)
+                throw new InvalidOperationException("SkiaGodotRenderer.Dispose must be called from Godot's main thread or its render thread.");
+
             var backend = _backend;
             _backend = null;
-            if (RenderingServer.IsOnRenderThread())
-                backend.Dispose();
+
+            // Same split as SkiaGodotRenderTarget2D.Dispose: detaching textures from the scene is the
+            // main thread's half, freeing GPU resources the render thread's.
+            if (onRenderThread && onMainThread)
+            {
+                backend.ReleaseLiveSceneTextures();
+                DisposeBackend(backend);
+            }
+            else if (onMainThread)
+            {
+                backend.ReleaseLiveSceneTextures();
+                RenderingServer.CallOnRenderThread(Callable.From(() => DisposeBackend(backend)));
+            }
             else
-                RenderingServer.CallOnRenderThread(Callable.From(backend.Dispose));
+            {
+                Callable.From(() =>
+                {
+                    backend.ReleaseLiveSceneTextures();
+                    RenderingServer.CallOnRenderThread(Callable.From(() => DisposeBackend(backend)));
+                }).CallDeferred();
+            }
+        }
+
+        static void DisposeBackend(SkiaGodotBackend backend)
+        {
+            try
+            {
+                backend.DisposeLiveTargets();
+            }
+            finally
+            {
+                backend.Dispose();
+            }
         }
     }
 }

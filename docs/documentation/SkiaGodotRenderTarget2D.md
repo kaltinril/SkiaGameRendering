@@ -35,14 +35,14 @@ public sealed class SkiaGodotRenderTarget2D : IDisposable
 | `Canvas` | The `SKCanvas` to draw on. Only valid between `Begin` and `End`. |
 | `Begin(bool clear = true)` | Starts a render pass; with `clear` false the previous contents are kept. Throws off the render thread. |
 | `End()` | Submits Skia's GPU work and hands the texture back in the state Godot expects (Vulkan: a layout barrier; D3D12: a `CopyResource` into Godot's texture with barriers around it; OpenGL: just a flush on the shared context), without waiting on the GPU. No composite. |
-| `Dispose()` | Frees Skia's resources, detaches the `Texture2DRD` view, and frees the RD texture. Must not be called between `Begin`/`End`. Under the "Separate" thread model the GPU half is handed to the render thread and completes a frame or so later. |
+| `Dispose()` | Frees Skia's resources. On the RenderingDevice drivers it also detaches the `Texture2DRD` view and frees the RD texture, so nodes still showing `Texture` go blank; on the Compatibility renderer the `ImageTexture` keeps its last contents. Must not be called between `Begin`/`End`. `SkiaGodotRenderer.Dispose()` disposes every target still alive. Under the "Separate" thread model the GPU half is handed to the render thread and completes a frame or so later. |
 | `static CreatePremultipliedAlphaMaterial()` | A `CanvasItemMaterial` with `BlendMode = PremultAlpha`, matching Skia's premultiplied output. Assign to the displaying node when the canvas has transparent areas. |
 
 ## Related types
 
 | Type | Role |
 | --- | --- |
-| `SkiaGodotRenderer` | Static holder for the shared backend, mirroring `SkiaRaylibRenderer`/`SkiaStrideVulkanRenderer`. `Initialize(RenderingDevice? = null)` is optional - call it to fail fast on an unsupported driver. `Driver` reports `"vulkan"`, `"d3d12"` or `"opengl3"`, `IsZeroCopy` whether Skia draws straight into Godot's texture, `D3D12UsesEnhancedBarriers` which state-tracking mode Godot's D3D12 device runs in. `Dispose()` releases the backend. |
+| `SkiaGodotRenderer` | Static holder for the shared backend, mirroring `SkiaRaylibRenderer`/`SkiaStrideVulkanRenderer`. `Initialize(RenderingDevice? = null)` is optional - call it to fail fast on an unsupported driver. `Driver` reports `"vulkan"`, `"d3d12"` or `"opengl3"`, `IsZeroCopy` whether Skia draws straight into Godot's texture, `D3D12UsesEnhancedBarriers` which state-tracking mode Godot's D3D12 device runs in. `Dispose()` releases the backend and every target still alive on it; a target used afterward throws `ObjectDisposedException`. `Initialize` accepts only Godot's global `RenderingDevice`. |
 | `SkiaGameRendering.Core.VK.VkImageLayoutTransitioner` | Added for this adapter: queues `vkCmdPipelineBarrier` layout transitions on the host's queue through a ring of command buffers, resolving its entry points through `vkGetDeviceProcAddr`. Any Vulkan host whose engine tracks image layouts needs it. |
 | `SkiaGameRendering.Core.D3D12.D3D12ResourceTransitioner` | Its D3D12 twin: queues resource-state transitions and a `CopyResource` bracketed by transitions through a ring of command lists, over raw COM vtables. |
 
@@ -86,7 +86,7 @@ skia.End();
   state-tracking path, `ALL_SHADER_RESOURCE` (the legacy equivalent of `D3D12_BARRIER_LAYOUT_SHADER_RESOURCE`)
   when Godot runs with enhanced barriers, decided the same way Godot decides it
   (`D3D12_FEATURE_D3D12_OPTIONS12.EnhancedBarriersSupported`). Confirmed clean under Godot's
-  `--gpu-validation` on both drivers. See `SkiaGodotBackend` and its two implementations for the
+  `--gpu-validation` on both RenderingDevice drivers. See `SkiaGodotBackend` and its implementations for the
   source-level trail.
 - **The Compatibility renderer** has no `RenderingDevice`, so its backend is the raylib adapter's
   shape instead: a second native GL context (WGL on Windows, GLX on Linux X11 - the raylib
@@ -119,9 +119,10 @@ skia.End();
 - **No CPU stall per frame.** `End()` submits without waiting for the GPU
   (`EndDraw(synchronous: false)` on either Core factory): Godot samples the texture in its own frame
   submit on the same queue, which is queue-ordered behind Skia's work, so no fence wait is needed for
-  correctness, and the hand-back submissions go through a ring of eight command buffers. The one
+  correctness, and the hand-back submissions go through a ring of command buffers that grows instead of waiting
+  when every buffer is still in flight. The one
   place that does wait is `Dispose`, before Godot frees the texture.
 - **Color.** The texture is plain UNORM with no Skia color-space tag: Godot's default gamma-space
   2D pipeline displays Skia's sRGB bytes 1:1 (the sample's pure red and CornflowerBlue read back
-  exactly on both drivers). HDR 2D projects are not compensated for.
+  exactly on all three drivers). HDR 2D projects are not compensated for.
 - See also the [Godot quick start](../godot/quickstart.md).

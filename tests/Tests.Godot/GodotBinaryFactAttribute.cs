@@ -28,4 +28,26 @@ public sealed class GodotBinaryTheoryAttribute : TheoryAttribute
         else if (!File.Exists(path))
             Skip = $"{EnvironmentVariable} is set to '{path}', which does not exist.";
     }
+
+    /// <summary>Skips everywhere but Windows (Godot offers d3d12 only there).</summary>
+    public bool WindowsOnly
+    {
+        get => false;
+        set
+        {
+            if (value && Skip == null && !OperatingSystem.IsWindows())
+                Skip = "Windows only.";
+        }
+    }
+
+    /// <summary>Skips on macOS, where Godot's opengl3 driver uses a context type this library does not support.</summary>
+    public bool SkipOnMacOS
+    {
+        get => false;
+        set
+        {
+            if (value && Skip == null && OperatingSystem.IsMacOS())
+                Skip = "Not supported on macOS.";
+        }
+    }
 }

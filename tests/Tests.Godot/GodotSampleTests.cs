@@ -6,7 +6,7 @@ namespace Tests.Godot;
 
 /// <summary>
 /// Launches the real Godot binary (<see cref="GodotBinaryTheoryAttribute"/>) against
-/// <c>samples/Sample.Godot</c> on each RenderingDevice driver, with the sample's <c>--screenshot</c>
+/// <c>samples/Sample.Godot</c> on each supported rendering driver, with the sample's <c>--screenshot</c>
 /// user argument, then checks the PNG it writes: the shared sample scene is a red circle of radius
 /// min(w,h)/2, centered, over a CornflowerBlue clear, so the center pixel must be pure red and every
 /// corner pure blue. Solid fills are driver-independent, unlike anti-aliased edges, which is why
@@ -20,13 +20,18 @@ public class GodotSampleTests
 
     [GodotBinaryTheory]
     [InlineData("vulkan")]
-    [InlineData("d3d12")]
-    [InlineData("opengl3")]
-    public void GodotSampleRendersSkiaSceneIntoTexture2DRD(string renderingDriver)
-    {
-        if (renderingDriver == "d3d12" && !OperatingSystem.IsWindows())
-            return; // Godot only offers d3d12 on Windows; nothing to test elsewhere.
+    public void GodotSampleRendersSkiaScene(string renderingDriver) => RunSample(renderingDriver);
 
+    [GodotBinaryTheory(WindowsOnly = true)]
+    [InlineData("d3d12")]
+    public void GodotSampleRendersSkiaScene_WindowsOnly(string renderingDriver) => RunSample(renderingDriver);
+
+    [GodotBinaryTheory(SkipOnMacOS = true)]
+    [InlineData("opengl3")]
+    public void GodotSampleRendersSkiaScene_NotOnMacOS(string renderingDriver) => RunSample(renderingDriver);
+
+    static void RunSample(string renderingDriver)
+    {
         var godot = Environment.GetEnvironmentVariable(GodotBinaryTheoryAttribute.EnvironmentVariable)!;
         var sampleDir = FindSampleDirectory();
 

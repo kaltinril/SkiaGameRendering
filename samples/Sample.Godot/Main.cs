@@ -10,7 +10,7 @@ using SharedScene = Sample.Shared.Scene;
 /// way a Godot project would show any other <see cref="Texture2D"/>.
 ///
 /// Run from this folder with the Godot 4.7 .NET editor binary, after `dotnet build`:
-///   godot --path . --rendering-driver vulkan     (or d3d12)
+///   godot --path . --rendering-driver vulkan     (or d3d12, or opengl3 with --rendering-method gl_compatibility)
 /// Pass `-- --screenshot out.png` to save the fifth rendered frame to a PNG and quit, which is what
 /// tests/Tests.Godot drives, once per driver, for an objective, no-human-in-the-loop pixel check.
 /// </summary>
@@ -23,7 +23,7 @@ public partial class Main : Node2D
     public override void _Ready()
     {
         // Optional: SkiaGodotRenderTarget2D auto-initializes on first use. Initializing explicitly
-        // fails fast (with a clear stack) if the project is not on a supported RenderingDevice driver.
+        // fails fast (with a clear stack) if the project is not on a supported rendering driver.
         SkiaGodotRenderer.Initialize();
         GD.Print($"SkiaGameRendering.Godot on {SkiaGodotRenderer.Driver} (zero-copy: {SkiaGodotRenderer.IsZeroCopy}, D3D12 enhanced barriers: {SkiaGodotRenderer.D3D12UsesEnhancedBarriers?.ToString() ?? "n/a"})");
 

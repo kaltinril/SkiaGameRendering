@@ -5,7 +5,7 @@ using SkiaSharp;
 namespace SkiaGameRendering.Godot
 {
     /// <summary>
-    /// What the two <see cref="RenderingDevice"/> backends share: creating the RD texture Godot will
+    /// What the Vulkan and D3D12 backends share: creating the RD texture Godot will
     /// sample, priming it, and the <see cref="Texture2Drd"/> that exposes it to the scene tree. What
     /// differs per graphics API - how Skia gets at the device and the texture, and how the texture is
     /// handed back to Godot after a draw - is left to <see cref="VulkanGodotBackend"/> and
@@ -75,8 +75,15 @@ namespace SkiaGameRendering.Godot
 
         internal override void Initialize(RenderingDevice? explicitDevice)
         {
-            _renderingDevice = explicitDevice ?? RenderingServer.GetRenderingDevice()
+            var global = RenderingServer.GetRenderingDevice()
                 ?? throw new InvalidOperationException("RenderingServer.GetRenderingDevice() returned null on a RenderingDevice driver.");
+            // A local device's textures cannot back a Texture2DRD, which is how every target reaches
+            // the scene tree, so a local device would give targets that never display.
+            if (explicitDevice != null && explicitDevice != global)
+                throw new NotSupportedException(
+                    "SkiaGameRendering.Godot renders only on Godot's global RenderingDevice (RenderingServer.GetRenderingDevice()); " +
+                    "textures on a local RenderingDevice cannot be shown in the scene tree.");
+            _renderingDevice = global;
             InitializeCore();
         }
 
@@ -87,7 +94,7 @@ namespace SkiaGameRendering.Godot
 
         protected abstract void DisposeCore();
 
-        internal override SkiaGodotTargetResources CreateTarget(int width, int height, SKColorType colorType) =>
+        protected override SkiaGodotTargetResources CreateTargetCore(int width, int height, SKColorType colorType) =>
             new TargetResources(this, width, height, colorType);
 
         /// <summary>
@@ -101,8 +108,8 @@ namespace SkiaGameRendering.Godot
         /// a second, sRGB-format shared view of any RD texture whose format has an sRGB twin, and on
         /// Vulkan a <c>vkCreateImageView</c> with a different format is only legal on an image created
         /// with <c>VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT</c> - which Godot sets exactly when
-        /// <see cref="RDTextureFormat"/> lists shareable formats. Found by running the sample under
-        /// <c>--gpu-validation</c> (<c>VUID-VkImageViewCreateInfo-image-01762</c>).
+        /// <see cref="RDTextureFormat"/> lists shareable formats. Without it the validation layer
+        /// reports <c>VUID-VkImageViewCreateInfo-image-01762</c>.
         /// </para>
         /// </summary>
         Rid CreateTexture(int width, int height, RenderingDevice.DataFormat format, RenderingDevice.DataFormat? srgbFormat)
@@ -259,10 +266,13 @@ namespace SkiaGameRendering.Godot
         /// </summary>
         static RenderingDevice.DataFormat ToDataFormat(SKColorType colorType) => colorType switch
         {
+            SKColorType.Rgba8888 => RenderingDevice.DataFormat.R8G8B8A8Unorm,
             SKColorType.Bgra8888 => RenderingDevice.DataFormat.B8G8R8A8Unorm,
             SKColorType.Rgba1010102 => RenderingDevice.DataFormat.A2B10G10R10UnormPack32,
             SKColorType.Rgba16161616 => RenderingDevice.DataFormat.R16G16B16A16Unorm,
-            _ => RenderingDevice.DataFormat.R8G8B8A8Unorm,
+            _ => throw new NotSupportedException(
+                $"SkiaGameRendering.Godot does not support SKColorType.{colorType}. Supported: Rgba8888, Bgra8888, Rgba1010102, " +
+                "Rgba16161616 (Rgba8888 only on the Compatibility renderer)."),
         };
 
         /// <summary>The sRGB twin of <see cref="ToDataFormat"/>'s result, or <c>null</c> when the format has none. See <see cref="CreateTexture"/> for why Godot needs it declared.</summary>
@@ -365,19 +375,33 @@ namespace SkiaGameRendering.Godot
                 if (_disposed)
                     return;
                 _disposed = true;
+                _backend.Untrack(this);
 
                 ReleaseSceneTexture();
 
-                // Skia submits asynchronously; make sure the last frame's work on this texture has
-                // landed before anything backing it is destroyed.
-                _backend.WaitForPendingGpuWork();
-                _gpu?.Dispose();
-                _gpu = null;
-
-                if (_textureRid.IsValid)
+                try
                 {
-                    _backend.RenderingDevice.FreeRid(_textureRid);
-                    _textureRid = default;
+                    // Skia submits asynchronously; make sure the last frame's work on this texture has
+                    // landed before anything backing it is destroyed.
+                    _backend.WaitForPendingGpuWork();
+                }
+                finally
+                {
+                    // Freed even when the wait throws (device lost): _disposed is already set, so
+                    // there is no second chance to release them.
+                    try
+                    {
+                        _gpu?.Dispose();
+                        _gpu = null;
+                    }
+                    finally
+                    {
+                        if (_textureRid.IsValid)
+                        {
+                            _backend.RenderingDevice.FreeRid(_textureRid);
+                            _textureRid = default;
+                        }
+                    }
                 }
             }
         }

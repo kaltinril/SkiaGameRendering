@@ -117,7 +117,8 @@ namespace SkiaGameRendering.Godot
             SKColorType.Bgra8888 => D3D12Constants.FormatB8G8R8A8Unorm,
             SKColorType.Rgba1010102 => D3D12Constants.FormatR10G10B10A2Unorm,
             SKColorType.Rgba16161616 => D3D12Constants.FormatR16G16B16A16Unorm,
-            _ => D3D12Constants.FormatR8G8B8A8Unorm,
+            SKColorType.Rgba8888 => D3D12Constants.FormatR8G8B8A8Unorm,
+            _ => throw new NotSupportedException($"SkiaGameRendering.Godot does not support SKColorType.{colorType} on D3D12."),
         };
 
         /// <summary>One Skia-owned typed resource plus the persistent surface wrapping it. See the class doc comment for why the copy.</summary>

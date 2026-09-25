@@ -14,8 +14,8 @@
     <PackageId>SkiaGameRendering.Godot</PackageId>
     <Version>$(LibraryVersion)</Version>
     <!--
-      One package for every Godot RenderingDevice driver rather than one per graphics API like the
-      other engines here: Godot picks Vulkan or D3D12 at RUN time (a project setting, a command-line
+      One package for every Godot rendering driver rather than one per graphics API like the
+      other engines here: Godot picks Vulkan, D3D12 or OpenGL at run time (a project setting, a command-line
       switch, or an automatic fallback when the preferred driver is unavailable), so a game cannot
       choose a graphics-API-specific package at build time. The backend is selected from
       RenderingServer.GetCurrentRenderingDriverName() when the renderer initializes.
@@ -32,7 +32,7 @@
       built (Godot.NET.Sdk is for the game project itself, which must be the one assembly Godot
       scans for script classes). Nothing here derives from GodotObject, so Godot.SourceGenerators
       is not needed either: the public types are ordinary C# classes that hand back an engine-owned
-      Texture2Drd. A game project's own Godot.NET.Sdk pins GodotSharp to its editor version, and
+      Texture2D. A game project's own Godot.NET.Sdk pins GodotSharp to its editor version, and
       NuGet unifies this floor upward to it.
     -->
     <PackageReference Include="GodotSharp" Version="$(GodotSharpVersion)" />
@@ -51,20 +51,6 @@
     <ProjectReference Include="..\SkiaGameRendering.Core.D3D12\SkiaGameRendering.Core.D3D12.csproj" />
     <!-- The Compatibility (OpenGL) renderer: FBO-wrapping a GL texture, like the raylib adapter. -->
     <ProjectReference Include="..\SkiaGameRendering.Core.OGL\SkiaGameRendering.Core.OGL.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!--
-      The Compatibility backend needs a second native GL context sharing Godot's object namespace,
-      which is exactly the WGL/GLX plumbing the raylib adapter already carries. Linked rather than
-      duplicated (the repo's usual pattern for shared source); the classes are internal, so they
-      compile into this assembly under their original namespace. Moving them into Core.OGL as public
-      types is the cleaner home once a third GL host needs them.
-    -->
-    <Compile Include="..\SkiaGameRendering.Raylib.OGL\IPlatformGlContext.cs" Link="Gl\IPlatformGlContext.cs" />
-    <Compile Include="..\SkiaGameRendering.Raylib.OGL\PlatformGlFunctionLoader.cs" Link="Gl\PlatformGlFunctionLoader.cs" />
-    <Compile Include="..\SkiaGameRendering.Raylib.OGL\Wgl.cs" Link="Gl\Wgl.cs" />
-    <Compile Include="..\SkiaGameRendering.Raylib.OGL\Glx.cs" Link="Gl\Glx.cs" />
   </ItemGroup>
 
   <ItemGroup>

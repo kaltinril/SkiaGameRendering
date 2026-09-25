@@ -20,7 +20,7 @@ namespace SkiaGameRendering.Godot
     /// do); <see cref="HandBack"/> submits an explicit <c>COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL</c>
     /// barrier after every Skia flush, because Skia leaves a wrapped render target in
     /// <c>COLOR_ATTACHMENT_OPTIMAL</c> and SkiaSharp 3.119.4 cannot be asked for anything else (see
-    /// <see cref="VkSkiaSurfaceFactory.EndDraw"/>); and <see cref="Resources"/> re-wraps the surface each
+    /// <see cref="VkSkiaSurfaceFactory.EndDraw(bool)"/>); and <see cref="Resources"/> re-wraps the surface each
     /// frame with that layout as Skia's starting point and records a no-op draw so even a frame with
     /// no other Skia work executes a render pass.
     /// </item>
@@ -38,6 +38,18 @@ namespace SkiaGameRendering.Godot
     /// <c>application_api_version</c>) and does not expose that number, so this clamps
     /// <see cref="VkSkiaSurfaceFactory.QueryApiVersion"/>'s loader/device answer to 1.2 rather than
     /// let Skia assume 1.3 core entry points Godot never declared.
+    /// </item>
+    /// <item>
+    /// <b>Skia submits to Godot's main <c>VkQueue</c> without Godot's lock.</b> Godot guards each
+    /// <c>vkQueueSubmit</c> with a per-queue mutex that C# cannot reach, because its texture/buffer
+    /// upload workers (<c>RenderingDevice::_acquire_transfer_worker</c>) can submit from any thread.
+    /// Godot creates one queue per family and puts those uploads on the family with the fewest
+    /// flags that include <c>TRANSFER</c>. On most discrete GPUs that is a dedicated transfer
+    /// family, a separate <c>VkQueue</c>, and nothing races. When no such family exists (typical of
+    /// integrated, mobile and MoltenVK devices) uploads share Skia's queue, and a texture upload on a
+    /// worker thread (threaded resource loading) can race Skia's submit.
+    /// <see cref="GodotVulkanQueueFamilies"/> mirrors Godot's pick, and <see cref="InitializeCore"/> warns
+    /// once when they share.
     /// </item>
     /// <item>
     /// <b>Device features.</b> <c>VkPhysicalDeviceFeatures2</c> is left null so Skia queries what the
@@ -92,6 +104,12 @@ namespace SkiaGameRendering.Godot
                 acquireQueueLock: null);
 
             _transitioner = new VkImageLayoutTransitioner(device, queue, queueFamilyIndex);
+
+            if (GodotVulkanQueueFamilies.UploadsShareMainQueue(VkSkiaSurfaceFactory.QueryQueueFamilyFlags(instance, physicalDevice), queueFamilyIndex))
+                GD.PushWarning(
+                    "SkiaGameRendering.Godot: this GPU has no dedicated Vulkan transfer queue, so Godot's texture uploads share the queue " +
+                    "Skia submits to. An upload from another thread (for example ResourceLoader.LoadThreadedRequest) can then race Skia's " +
+                    "submit. Avoid loading textures off the render thread while Skia draws, or use the d3d12 driver on Windows.");
         }
 
         internal override RenderingDeviceGpuResources CreateGpuResources(Rid texture, int width, int height, SKColorType colorType)

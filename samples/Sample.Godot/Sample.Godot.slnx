@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="../../src/SkiaGameRendering.Core.OGL/SkiaGameRendering.Core.OGL.csproj" />
   <Project Path="../../src/SkiaGameRendering.Core.VK/SkiaGameRendering.Core.VK.csproj" />
   <Project Path="../../src/SkiaGameRendering.Core.D3D12/SkiaGameRendering.Core.D3D12.csproj" />
   <Project Path="../../src/SkiaGameRendering.Godot/SkiaGameRendering.Godot.csproj" />

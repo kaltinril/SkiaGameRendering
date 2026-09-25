@@ -3,49 +3,9 @@ using System.Runtime.InteropServices;
 namespace SkiaGameRendering.Core.VK
 {
     /// <summary>
-    /// Raw <c>VkImageLayout</c>, pipeline-stage, access, usage and aspect values host adapters need
-    /// when describing a wrapped image to <see cref="VkSkiaSurfaceFactory.CreateTextureState"/> or
-    /// driving <see cref="VkImageLayoutTransitioner"/>. Named here so adapters do not each redeclare
-    /// the same magic numbers; Core.VK itself still speaks raw <c>uint</c>s (see
-    /// <see cref="VulkanNative"/> for why there is no Vulkan binding on either side).
-    /// </summary>
-    public static class VkConstants
-    {
-        public const uint ImageLayoutUndefined = 0;
-        public const uint ImageLayoutGeneral = 1;
-        public const uint ImageLayoutColorAttachmentOptimal = 2;
-        public const uint ImageLayoutShaderReadOnlyOptimal = 5;
-        public const uint ImageLayoutTransferSrcOptimal = 6;
-        public const uint ImageLayoutTransferDstOptimal = 7;
-
-        public const uint PipelineStageTopOfPipe = 0x1;
-        public const uint PipelineStageFragmentShader = 0x80;
-        public const uint PipelineStageColorAttachmentOutput = 0x400;
-        public const uint PipelineStageTransfer = 0x1000;
-        public const uint PipelineStageBottomOfPipe = 0x2000;
-
-        public const uint AccessShaderRead = 0x20;
-        public const uint AccessColorAttachmentWrite = 0x100;
-        public const uint AccessTransferRead = 0x800;
-        public const uint AccessTransferWrite = 0x1000;
-
-        public const uint ImageAspectColor = 0x1;
-
-        public const uint ImageUsageTransferSrc = 0x1;
-        public const uint ImageUsageTransferDst = 0x2;
-        public const uint ImageUsageSampled = 0x4;
-        public const uint ImageUsageColorAttachment = 0x10;
-
-        public const uint QueueFamilyIgnored = 0xFFFFFFFF;
-
-        /// <summary><c>VK_MAKE_API_VERSION(0, major, minor, 0)</c>.</summary>
-        public static uint MakeApiVersion(uint major, uint minor) => (major << 22) | (minor << 12);
-    }
-
-    /// <summary>
     /// Records and submits single <c>vkCmdPipelineBarrier</c> image-layout transitions on the host's
     /// queue - the "host needing certainty must insert its own barrier" fallback
-    /// <see cref="VkSkiaSurfaceFactory.EndDraw"/>'s doc comment describes, packaged so an adapter
+    /// <see cref="VkSkiaSurfaceFactory.EndDraw(bool)"/>'s doc comment describes, packaged so an adapter
     /// does not have to own Vulkan command-pool plumbing itself.
     ///
     /// Why an adapter needs this at all: Skia leaves a wrapped render target in
@@ -59,10 +19,11 @@ namespace SkiaGameRendering.Core.VK
     /// the cost of one small extra queue submission per draw.
     ///
     /// Submissions are asynchronous: <see cref="Transition"/> returns as soon as the barrier is
-    /// queued. A ring of <c>slots</c> command buffers (each with its own pool and fence) lets that
-    /// many transitions be in flight before a call has to wait for the oldest one; with the default
-    /// of eight, an adapter drawing a handful of targets per frame never stalls the CPU on the GPU in
-    /// steady state. <see cref="WaitForCompletion"/> drains everything, for teardown.
+    /// queued. A ring of command buffers (each with its own pool and fence) holds the in-flight
+    /// transitions. When the oldest one has not finished yet, the ring grows by a slot instead of
+    /// waiting, up to <see cref="MaxSlots"/>, so the ring settles at however many transitions the
+    /// host submits per GPU frame and the CPU does not stall on the GPU in steady state.
+    /// <see cref="WaitForCompletion"/> drains everything, for teardown.
     ///
     /// Every Vulkan entry point is resolved through <c>vkGetDeviceProcAddr</c> (see
     /// <see cref="VulkanNative"/>), never P/Invoked by name, and the command pools are created on the
@@ -81,11 +42,20 @@ namespace SkiaGameRendering.Core.VK
         const uint VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT = 0x1;
         const uint VK_COMMAND_POOL_CREATE_TRANSIENT_BIT = 0x1;
         const int VK_SUCCESS = 0;
+        const int VK_NOT_READY = 1;
+
+        /// <summary>The most slots the ring grows to before <see cref="Transition"/> waits for the oldest one.</summary>
+        public const int MaxSlots = 64;
 
         readonly IntPtr _device;
         readonly IntPtr _queue;
+        readonly uint _queueFamilyIndex;
         readonly Func<IDisposable>? _acquireQueueLock;
 
+        readonly delegate* unmanaged<IntPtr, VkCommandPoolCreateInfo*, IntPtr, ulong*, int> _vkCreateCommandPool;
+        readonly delegate* unmanaged<IntPtr, VkCommandBufferAllocateInfo*, IntPtr*, int> _vkAllocateCommandBuffers;
+        readonly delegate* unmanaged<IntPtr, VkFenceCreateInfo*, IntPtr, ulong*, int> _vkCreateFence;
+        readonly delegate* unmanaged<IntPtr, ulong, int> _vkGetFenceStatus;
         readonly delegate* unmanaged<IntPtr, ulong, IntPtr, void> _vkDestroyCommandPool;
         readonly delegate* unmanaged<IntPtr, ulong, uint, int> _vkResetCommandPool;
         readonly delegate* unmanaged<IntPtr, VkCommandBufferBeginInfo*, int> _vkBeginCommandBuffer;
@@ -96,7 +66,7 @@ namespace SkiaGameRendering.Core.VK
         readonly delegate* unmanaged<IntPtr, uint, ulong*, int> _vkResetFences;
         readonly delegate* unmanaged<IntPtr, uint, ulong*, uint, ulong, int> _vkWaitForFences;
 
-        readonly Slot[] _slots;
+        readonly List<Slot> _slots = new();
         int _nextSlot;
         bool _disposed;
 
@@ -119,7 +89,8 @@ namespace SkiaGameRendering.Core.VK
         /// takes; bracketed around this class's <c>vkQueueSubmit</c> calls.
         /// </param>
         /// <param name="slots">
-        /// How many transitions may be in flight before <see cref="Transition"/> waits for the oldest.
+        /// How many command buffers the ring starts with. It grows past this on its own (see the class
+        /// doc comment), so this only saves the first few frames an allocation.
         /// </param>
         public VkImageLayoutTransitioner(IntPtr device, IntPtr queue, uint queueFamilyIndex, Func<IDisposable>? acquireQueueLock = null, int slots = 8)
         {
@@ -127,16 +98,18 @@ namespace SkiaGameRendering.Core.VK
                 throw new ArgumentException("Vulkan device native pointer is null.", nameof(device));
             if (queue == IntPtr.Zero)
                 throw new ArgumentException("Vulkan queue native pointer is null.", nameof(queue));
-            if (slots < 1)
-                throw new ArgumentOutOfRangeException(nameof(slots));
+            if (slots < 1 || slots > MaxSlots)
+                throw new ArgumentOutOfRangeException(nameof(slots), slots, $"Must be between 1 and {MaxSlots}.");
 
             _device = device;
             _queue = queue;
+            _queueFamilyIndex = queueFamilyIndex;
             _acquireQueueLock = acquireQueueLock;
 
-            var vkCreateCommandPool = (delegate* unmanaged<IntPtr, VkCommandPoolCreateInfo*, IntPtr, ulong*, int>)VulkanNative.RequireDeviceProc(device, "vkCreateCommandPool");
-            var vkAllocateCommandBuffers = (delegate* unmanaged<IntPtr, VkCommandBufferAllocateInfo*, IntPtr*, int>)VulkanNative.RequireDeviceProc(device, "vkAllocateCommandBuffers");
-            var vkCreateFence = (delegate* unmanaged<IntPtr, VkFenceCreateInfo*, IntPtr, ulong*, int>)VulkanNative.RequireDeviceProc(device, "vkCreateFence");
+            _vkCreateCommandPool = (delegate* unmanaged<IntPtr, VkCommandPoolCreateInfo*, IntPtr, ulong*, int>)VulkanNative.RequireDeviceProc(device, "vkCreateCommandPool");
+            _vkAllocateCommandBuffers = (delegate* unmanaged<IntPtr, VkCommandBufferAllocateInfo*, IntPtr*, int>)VulkanNative.RequireDeviceProc(device, "vkAllocateCommandBuffers");
+            _vkCreateFence = (delegate* unmanaged<IntPtr, VkFenceCreateInfo*, IntPtr, ulong*, int>)VulkanNative.RequireDeviceProc(device, "vkCreateFence");
+            _vkGetFenceStatus = (delegate* unmanaged<IntPtr, ulong, int>)VulkanNative.RequireDeviceProc(device, "vkGetFenceStatus");
             _vkDestroyCommandPool = (delegate* unmanaged<IntPtr, ulong, IntPtr, void>)VulkanNative.RequireDeviceProc(device, "vkDestroyCommandPool");
             _vkResetCommandPool = (delegate* unmanaged<IntPtr, ulong, uint, int>)VulkanNative.RequireDeviceProc(device, "vkResetCommandPool");
             _vkBeginCommandBuffer = (delegate* unmanaged<IntPtr, VkCommandBufferBeginInfo*, int>)VulkanNative.RequireDeviceProc(device, "vkBeginCommandBuffer");
@@ -147,43 +120,78 @@ namespace SkiaGameRendering.Core.VK
             _vkResetFences = (delegate* unmanaged<IntPtr, uint, ulong*, int>)VulkanNative.RequireDeviceProc(device, "vkResetFences");
             _vkWaitForFences = (delegate* unmanaged<IntPtr, uint, ulong*, uint, ulong, int>)VulkanNative.RequireDeviceProc(device, "vkWaitForFences");
 
-            _slots = new Slot[slots];
             try
             {
                 for (int i = 0; i < slots; i++)
-                {
-                    var poolInfo = new VkCommandPoolCreateInfo
-                    {
-                        sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                        flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-                        queueFamilyIndex = queueFamilyIndex,
-                    };
-                    ulong pool;
-                    Check(vkCreateCommandPool(device, &poolInfo, IntPtr.Zero, &pool), "vkCreateCommandPool");
-                    _slots[i].CommandPool = pool;
-
-                    var allocateInfo = new VkCommandBufferAllocateInfo
-                    {
-                        sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                        commandPool = pool,
-                        level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                        commandBufferCount = 1,
-                    };
-                    IntPtr commandBuffer;
-                    Check(vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer), "vkAllocateCommandBuffers");
-                    _slots[i].CommandBuffer = commandBuffer;
-
-                    var fenceInfo = new VkFenceCreateInfo { sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-                    ulong fence;
-                    Check(vkCreateFence(device, &fenceInfo, IntPtr.Zero, &fence), "vkCreateFence");
-                    _slots[i].Fence = fence;
-                }
+                    _slots.Add(CreateSlot());
             }
             catch
             {
                 DestroySlots();
                 throw;
             }
+        }
+
+        /// <summary>How many command buffers the ring holds right now.</summary>
+        public int SlotCount => _slots.Count;
+
+        Slot CreateSlot()
+        {
+            var slot = new Slot();
+            try
+            {
+                var poolInfo = new VkCommandPoolCreateInfo
+                {
+                    sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                    queueFamilyIndex = _queueFamilyIndex,
+                };
+                ulong pool;
+                Check(_vkCreateCommandPool(_device, &poolInfo, IntPtr.Zero, &pool), "vkCreateCommandPool");
+                slot.CommandPool = pool;
+
+                var allocateInfo = new VkCommandBufferAllocateInfo
+                {
+                    sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                    commandPool = pool,
+                    level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                    commandBufferCount = 1,
+                };
+                IntPtr commandBuffer;
+                Check(_vkAllocateCommandBuffers(_device, &allocateInfo, &commandBuffer), "vkAllocateCommandBuffers");
+                slot.CommandBuffer = commandBuffer;
+
+                var fenceInfo = new VkFenceCreateInfo { sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+                ulong fence;
+                Check(_vkCreateFence(_device, &fenceInfo, IntPtr.Zero, &fence), "vkCreateFence");
+                slot.Fence = fence;
+                return slot;
+            }
+            catch
+            {
+                DestroySlot(ref slot);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// The slot the next submission records into: the oldest one, unless it is still executing
+        /// and the ring has room to grow, in which case a new slot goes in front of it.
+        /// </summary>
+        int AcquireSlotIndex()
+        {
+            var index = _nextSlot;
+            var oldest = _slots[index];
+            if (oldest.Pending && _slots.Count < MaxSlots)
+            {
+                var status = _vkGetFenceStatus(_device, oldest.Fence);
+                if (status == VK_NOT_READY)
+                    _slots.Insert(index, CreateSlot());
+                else if (status != VK_SUCCESS)
+                    Check(status, "vkGetFenceStatus");
+            }
+            _nextSlot = (index + 1) % _slots.Count;
+            return index;
         }
 
         /// <summary>
@@ -202,10 +210,10 @@ namespace SkiaGameRendering.Core.VK
             if (image == 0)
                 throw new ArgumentException("VkImage handle is null (0).", nameof(image));
 
-            ref var slot = ref _slots[_nextSlot];
-            _nextSlot = (_nextSlot + 1) % _slots.Length;
-
+            var index = AcquireSlotIndex();
+            var slot = _slots[index];
             WaitForSlot(ref slot);
+            _slots[index] = slot;
 
             Check(_vkResetCommandPool(_device, slot.CommandPool, 0), "vkResetCommandPool");
 
@@ -252,13 +260,18 @@ namespace SkiaGameRendering.Core.VK
                 Check(_vkQueueSubmit(_queue, 1, &submitInfo, slot.Fence), "vkQueueSubmit");
             }
             slot.Pending = true;
+            _slots[index] = slot;
         }
 
         /// <summary>Blocks until every queued <see cref="Transition"/> has executed on the GPU (no-op if none is pending).</summary>
         public void WaitForCompletion()
         {
-            for (int i = 0; i < _slots.Length; i++)
-                WaitForSlot(ref _slots[i]);
+            for (int i = 0; i < _slots.Count; i++)
+            {
+                var slot = _slots[i];
+                WaitForSlot(ref slot);
+                _slots[i] = slot;
+            }
         }
 
         void WaitForSlot(ref Slot slot)
@@ -296,16 +309,22 @@ namespace SkiaGameRendering.Core.VK
 
         void DestroySlots()
         {
-            for (int i = 0; i < _slots.Length; i++)
+            for (int i = 0; i < _slots.Count; i++)
             {
-                ref var slot = ref _slots[i];
-                if (slot.Fence != 0)
-                    _vkDestroyFence(_device, slot.Fence, IntPtr.Zero);
-                // Destroying the pool frees the command buffer allocated from it.
-                if (slot.CommandPool != 0)
-                    _vkDestroyCommandPool(_device, slot.CommandPool, IntPtr.Zero);
-                slot = default;
+                var slot = _slots[i];
+                DestroySlot(ref slot);
             }
+            _slots.Clear();
+        }
+
+        void DestroySlot(ref Slot slot)
+        {
+            if (slot.Fence != 0)
+                _vkDestroyFence(_device, slot.Fence, IntPtr.Zero);
+            // Destroying the pool frees the command buffer allocated from it.
+            if (slot.CommandPool != 0)
+                _vkDestroyCommandPool(_device, slot.CommandPool, IntPtr.Zero);
+            slot = default;
         }
 
         [StructLayout(LayoutKind.Sequential)]

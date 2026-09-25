@@ -57,13 +57,13 @@ namespace SkiaGameRendering.Core.D3D12
     /// own work to. Same reasoning <c>VkSkiaSurfaceFactory</c> gives for <c>vkQueueSubmit</c>:
     /// <c>Core.D3D12</c> cannot invent a shared lock out of nothing, so <see cref="InitializeFromNative"/>
     /// takes the same optional <c>acquireQueueLock</c> hook, invoked/disposed by
-    /// <see cref="BeginDraw"/>/<see cref="EndDraw"/> around the one call that actually submits to the
+    /// <see cref="BeginDraw"/>/<see cref="EndDraw(bool)"/> around the one call that actually submits to the
     /// queue (<c>GRContext.Flush(submit: true, ...)</c>). Passing <c>null</c> means "no external
     /// synchronization" - the caller's responsibility either way; this library has no way to verify it.
     /// </item>
     /// <item>
     /// <b>The post-draw <c>D3D12_RESOURCE_STATES</c> cannot be read back through this SkiaSharp
-    /// version.</b> See the doc comment on <see cref="EndDraw"/> - verified by listing SkiaSharp
+    /// version.</b> See the doc comment on <see cref="EndDraw(bool)"/> - verified by listing SkiaSharp
     /// 3.119.4's actual native P/Invoke surface (<c>SkiaApi</c>), not assumed: there is no
     /// <c>gr_backendrendertarget_get_d3d_*</c> entry point and no <c>GrBackendSurfaceMutableState</c>
     /// binding, the same absence <c>VkSkiaSurfaceFactory.EndDraw</c> documents for Vulkan's
@@ -183,7 +183,7 @@ namespace SkiaGameRendering.Core.D3D12
         /// <param name="resourceState">
         /// The resource's CURRENT <c>D3D12_RESOURCE_STATES</c> at the moment this call is made - Skia
         /// reads this once, as an input, to know what state to transition from for its first internal
-        /// barrier. See <see cref="EndDraw"/> for why this library cannot report back what state the
+        /// barrier. See <see cref="EndDraw(bool)"/> for why this library cannot report back what state the
         /// resource ends up in afterward.
         /// </param>
         /// <param name="sampleCount">The resource's own multisample count - almost always 1 for a render target.</param>
@@ -237,19 +237,22 @@ namespace SkiaGameRendering.Core.D3D12
         /// <summary>
         /// Acquires the host's queue lock (if one was wired through <c>acquireQueueLock</c> on
         /// <see cref="InitializeFromNative"/>) before any drawing happens. Paired with
-        /// <see cref="EndDraw"/>.
+        /// <see cref="EndDraw(bool)"/>.
         /// </summary>
         public void BeginDraw()
         {
             _queueLockHandle = _acquireQueueLock?.Invoke();
         }
 
+        /// <summary>Same as <see cref="EndDraw(bool)"/> with <c>synchronous: true</c>.</summary>
+        public void EndDraw() => EndDraw(synchronous: true);
+
         /// <summary>
         /// Flushes Skia's recorded D3D12 commands and submits them to the shared
         /// <c>ID3D12CommandQueue</c> (<c>GRContext.Flush(submit: true, synchronous)</c>) - the
         /// one call in this whole class that actually calls <c>ExecuteCommandLists</c>, which is why
         /// it (and not, say, <see cref="CreateSurface"/>) is what <see cref="BeginDraw"/>'s queue lock
-        /// brackets. <paramref name="synchronous"/> <c>true</c> (the default) blocks until the GPU
+        /// brackets. <paramref name="synchronous"/> <c>true</c> (what <see cref="EndDraw()"/> passes) blocks until the GPU
         /// finishes, matching <c>VkSkiaSurfaceFactory.EndDraw</c> and for the same reason: a host about
         /// to read the resource from the CPU needs the GPU work to have actually landed first. A host
         /// whose own consumption is queued behind this on the SAME queue can pass <c>false</c> and skip
@@ -267,13 +270,13 @@ namespace SkiaGameRendering.Core.D3D12
         /// A resource being drawn into by Skia's D3D12 backend must sit in
         /// <c>D3D12_RESOURCE_STATE_RENDER_TARGET</c> while Skia's draw commands execute, and nothing
         /// in this flush path transitions it anywhere else afterward - so
-        /// <c>D3D12_RESOURCE_STATE_RENDER_TARGET</c> is the ASSUMED post-<see cref="EndDraw"/> state
+        /// <c>D3D12_RESOURCE_STATE_RENDER_TARGET</c> is the ASSUMED post-<see cref="EndDraw(bool)"/> state
         /// for such a resource, not a value this library can verify or guarantee. A host needing
         /// certainty must insert its own <c>ResourceBarrier</c> rather than trust a reported value,
         /// since none exists.
         /// </para>
         /// </summary>
-        public void EndDraw(bool synchronous = true)
+        public void EndDraw(bool synchronous)
         {
             try
             {

@@ -55,7 +55,8 @@ command line overrides the settings for one run.
 ## Initialize and render
 
 Godot has no user-owned `Draw()` loop. A node draws Skia content into a `SkiaGodotRenderTarget2D`
-in `_Process`, and the scene tree displays its `Texture` (a stock `Texture2DRD`) through any node
+in `_Process`, and the scene tree displays its `Texture` (a stock `Texture2DRD`, or an `ImageTexture` on the
+Compatibility renderer) through any node
 that takes a `Texture2D` - a `Sprite2D`, `TextureRect`, material, and so on. The same code runs on
 every supported renderer:
 
@@ -72,7 +73,7 @@ public partial class SkiaOverlay : Node2D
     public override void _Ready()
     {
         // Optional - the render target auto-initializes on first use. Calling this explicitly
-        // fails fast if the project is not on a supported RenderingDevice driver.
+        // fails fast if the project is not on a supported rendering driver.
         SkiaGodotRenderer.Initialize();
         GD.Print($"Skia on {SkiaGodotRenderer.Driver}"); // "vulkan", "d3d12" or "opengl3"
 
@@ -153,6 +154,11 @@ to the Godot executable to enable that test; it skips otherwise).
   records the texture as sampled before Skia's first draw, and `End()` hands the texture back in
   that state with a small extra queue submission. Create targets up front, not per frame. See the
   documentation page for the full mechanism. (OpenGL has no layouts; none of this applies there.)
+- **Vulkan without a dedicated transfer queue.** Godot submits texture uploads under a queue lock
+  this library cannot take. When the GPU has no separate transfer queue (common on integrated,
+  mobile and MoltenVK devices), those uploads share Skia's queue, and one made off the render thread
+  (threaded resource loading) can race Skia's submit. `SkiaGodotRenderer.Initialize` prints a Godot
+  warning when that applies; avoid loading textures off the render thread while Skia draws there.
 - **`TextureRid` is for fragment-shader sampling only.** Binding it in your own CanvasItem or
   spatial fragment shader is fine; copying to or from it, clearing it, or using it as a storage
   image through `RenderingDevice` moves it out of the state this library keeps it in. On D3D12

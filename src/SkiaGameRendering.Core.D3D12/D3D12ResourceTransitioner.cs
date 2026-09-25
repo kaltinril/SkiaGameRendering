@@ -9,20 +9,25 @@ namespace SkiaGameRendering.Core.D3D12
     /// tracking expects, without owning any D3D12 command plumbing itself. The D3D12 sibling of
     /// Core.VK's <c>VkImageLayoutTransitioner</c>, for the reason that class's doc comment gives:
     /// SkiaSharp 3.119.4 cannot be asked which state to leave a wrapped resource in (see
-    /// <see cref="D3D12SkiaSurfaceFactory.EndDraw"/>).
+    /// <see cref="D3D12SkiaSurfaceFactory.EndDraw(bool)"/>).
     ///
     /// Submissions are asynchronous: each call returns as soon as its command list is queued. A ring
-    /// of <c>slots</c> allocator/list pairs, each tagged with a fence value, lets that many
-    /// submissions be in flight before a call has to wait for the oldest; <see cref="WaitForCompletion"/>
-    /// drains everything, for teardown. Every COM call goes through <see cref="D3D12Com"/>'s raw
+    /// of allocator/list pairs, each tagged with a fence value, holds the in-flight submissions. When
+    /// the oldest one has not finished yet, the ring grows by a pair instead of waiting, up to
+    /// <see cref="MaxSlots"/>, so the CPU does not stall on the GPU in steady state however many
+    /// targets the host draws per frame. <see cref="WaitForCompletion"/> drains everything, for teardown. Every COM call goes through <see cref="D3D12Com"/>'s raw
     /// vtable slots - no interop package. Not thread-safe; one instance per device/queue, driven from
     /// whatever thread the host lets submit.
     /// </summary>
     public sealed class D3D12ResourceTransitioner : IDisposable
     {
+        /// <summary>The most allocator/list pairs the ring grows to before a call waits for the oldest one.</summary>
+        public const int MaxSlots = 64;
+
+        readonly IntPtr _device;
         readonly IntPtr _queue;
         readonly Func<IDisposable>? _acquireQueueLock;
-        readonly Slot[] _slots;
+        readonly List<Slot> _slots = new();
         readonly IntPtr _fence;
         readonly IntPtr _fenceEvent;
         ulong _lastSignaledValue;
@@ -39,30 +44,25 @@ namespace SkiaGameRendering.Core.D3D12
         /// <param name="device">The host's <c>ID3D12Device*</c>.</param>
         /// <param name="queue">The host's direct <c>ID3D12CommandQueue*</c> - the same queue Skia and the host render with.</param>
         /// <param name="acquireQueueLock">The same optional queue-lock hook <see cref="D3D12SkiaSurfaceFactory.InitializeFromNative"/> takes; bracketed around each <c>ExecuteCommandLists</c>/<c>Signal</c> pair.</param>
-        /// <param name="slots">How many submissions may be in flight before a call waits for the oldest.</param>
+        /// <param name="slots">How many allocator/list pairs the ring starts with. It grows past this on its own (see the class doc comment).</param>
         public D3D12ResourceTransitioner(IntPtr device, IntPtr queue, Func<IDisposable>? acquireQueueLock = null, int slots = 8)
         {
             if (device == IntPtr.Zero)
                 throw new ArgumentException("D3D12 device native pointer is null.", nameof(device));
             if (queue == IntPtr.Zero)
                 throw new ArgumentException("D3D12 command queue native pointer is null.", nameof(queue));
-            if (slots < 1)
-                throw new ArgumentOutOfRangeException(nameof(slots));
+            if (slots < 1 || slots > MaxSlots)
+                throw new ArgumentOutOfRangeException(nameof(slots), slots, $"Must be between 1 and {MaxSlots}.");
 
+            _device = device;
             _queue = queue;
             _acquireQueueLock = acquireQueueLock;
-            _slots = new Slot[slots];
             try
             {
                 _fence = CreateFence(device, 0);
                 _fenceEvent = CreateEvent();
                 for (int i = 0; i < slots; i++)
-                {
-                    _slots[i].Allocator = CreateCommandAllocator(device);
-                    _slots[i].CommandList = CreateCommandList(device, _slots[i].Allocator);
-                    // Created in the recording state; close it so every use starts with Reset.
-                    Close(_slots[i].CommandList);
-                }
+                    _slots.Add(CreateSlot());
             }
             catch
             {
@@ -77,11 +77,19 @@ namespace SkiaGameRendering.Core.D3D12
             if (resource == IntPtr.Zero)
                 throw new ArgumentException("ID3D12Resource handle is null.", nameof(resource));
 
-            Submit(list =>
+            var index = BeginRecording();
+            var list = _slots[index].CommandList;
+            try
             {
                 Span<D3D12_RESOURCE_BARRIER> barrier = [D3D12_RESOURCE_BARRIER.Transition(resource, stateBefore, stateAfter)];
                 ResourceBarrier(list, barrier);
-            });
+            }
+            catch
+            {
+                Close(list);
+                throw;
+            }
+            Submit(index);
         }
 
         /// <summary>
@@ -99,7 +107,9 @@ namespace SkiaGameRendering.Core.D3D12
             if (source == IntPtr.Zero)
                 throw new ArgumentException("Source ID3D12Resource handle is null.", nameof(source));
 
-            Submit(list =>
+            var index = BeginRecording();
+            var list = _slots[index].CommandList;
+            try
             {
                 Span<D3D12_RESOURCE_BARRIER> before =
                 [
@@ -114,32 +124,77 @@ namespace SkiaGameRendering.Core.D3D12
                     D3D12_RESOURCE_BARRIER.Transition(source, D3D12Constants.ResourceStateCopySource, sourceStateAfter),
                 ];
                 ResourceBarrier(list, after);
-            });
+            }
+            catch
+            {
+                Close(list);
+                throw;
+            }
+            Submit(index);
         }
 
-        delegate void Recorder(IntPtr commandList);
+        /// <summary>How many allocator/list pairs the ring holds right now.</summary>
+        public int SlotCount => _slots.Count;
 
-        void Submit(Recorder record)
+        Slot CreateSlot()
+        {
+            var slot = new Slot();
+            try
+            {
+                slot.Allocator = CreateCommandAllocator(_device);
+                slot.CommandList = CreateCommandList(_device, slot.Allocator);
+                // Created in the recording state; close it so every use starts with Reset.
+                Close(slot.CommandList);
+                return slot;
+            }
+            catch
+            {
+                DestroySlot(slot);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Picks the slot to record into (the oldest, unless it is still executing and the ring can
+        /// grow), waits for it if it must, and leaves its command list open. The caller records, then
+        /// calls <see cref="Submit"/>, or closes the list itself if recording throws, so a failed
+        /// recording cannot leave the slot's list open for its next use.
+        /// </summary>
+        int BeginRecording()
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
 
-            ref var slot = ref _slots[_nextSlot];
-            _nextSlot = (_nextSlot + 1) % _slots.Length;
+            var index = _nextSlot;
+            var oldest = _slots[index];
+            if (oldest.FenceValue > GetCompletedValue(_fence) && _slots.Count < MaxSlots)
+                _slots.Insert(index, CreateSlot());
+            _nextSlot = (index + 1) % _slots.Count;
 
+            var slot = _slots[index];
             if (slot.FenceValue != 0)
                 WaitForFenceValue(_fence, slot.FenceValue, _fenceEvent);
 
             ResetAllocator(slot.Allocator);
             ResetList(slot.CommandList, slot.Allocator);
-            record(slot.CommandList);
+            return index;
+        }
+
+        void Submit(int index)
+        {
+            var slot = _slots[index];
             Close(slot.CommandList);
 
             using (_acquireQueueLock?.Invoke())
             {
                 ExecuteCommandList(_queue, slot.CommandList);
-                slot.FenceValue = ++_lastSignaledValue;
-                Signal(_queue, _fence, slot.FenceValue);
+                // Recorded only once Signal succeeds: a fence value that is never signaled would make
+                // the next wait on this slot, or WaitForCompletion, block forever.
+                var value = _lastSignaledValue + 1;
+                Signal(_queue, _fence, value);
+                _lastSignaledValue = value;
+                slot.FenceValue = value;
             }
+            _slots[index] = slot;
         }
 
         /// <summary>Blocks until every queued submission has executed on the GPU (no-op if none is pending).</summary>
@@ -167,17 +222,20 @@ namespace SkiaGameRendering.Core.D3D12
 
         void DestroyAll()
         {
-            for (int i = 0; i < _slots.Length; i++)
-            {
-                if (_slots[i].CommandList != IntPtr.Zero)
-                    Release(_slots[i].CommandList);
-                if (_slots[i].Allocator != IntPtr.Zero)
-                    Release(_slots[i].Allocator);
-                _slots[i] = default;
-            }
+            foreach (var slot in _slots)
+                DestroySlot(slot);
+            _slots.Clear();
             if (_fence != IntPtr.Zero)
                 Release(_fence);
             CloseEvent(_fenceEvent);
+        }
+
+        static void DestroySlot(Slot slot)
+        {
+            if (slot.CommandList != IntPtr.Zero)
+                Release(slot.CommandList);
+            if (slot.Allocator != IntPtr.Zero)
+                Release(slot.Allocator);
         }
     }
 }

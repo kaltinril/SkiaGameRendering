@@ -60,9 +60,8 @@ namespace SkiaGameRendering.Godot
         /// <summary>
         /// The engine-side texture Skia's output lands in - assign it wherever Godot takes a
         /// <see cref="Texture2D"/>. Its contents update in place; nothing needs re-assigning after
-        /// each <see cref="End"/>. On the RenderingDevice drivers this is a <see cref="Texture2Drd"/>
-        /// viewing <see cref="TextureRid"/>; typed as the base class so the API does not change if
-        /// a backend for a renderer without a RenderingDevice is added.
+        /// each <see cref="End"/>. A <see cref="Texture2Drd"/> viewing <see cref="TextureRid"/> on the
+        /// RenderingDevice drivers, an <see cref="ImageTexture"/> on the Compatibility renderer.
         /// </summary>
         public Texture2D Texture =>
             (_target ?? throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D))).Texture;
@@ -138,8 +137,10 @@ namespace SkiaGameRendering.Godot
             new() { BlendMode = CanvasItemMaterial.BlendModeEnum.PremultAlpha };
 
         /// <summary>
-        /// Releases the RD texture and Skia's resources. Throws if called between <see cref="Begin"/>
-        /// and <see cref="End"/>. Nodes still displaying <see cref="Texture"/> show nothing afterward.
+        /// Releases Skia's resources and, on the RenderingDevice drivers, the RD texture, so nodes
+        /// still displaying <see cref="Texture"/> show nothing afterward (on the Compatibility
+        /// renderer they keep the last contents). Throws if called between <see cref="Begin"/> and
+        /// <see cref="End"/>.
         /// <para>
         /// Under the default "Safe" thread model this completes synchronously. Under "Separate",
         /// disposal has a main-thread half (detaching the texture from the scene) and a render-thread

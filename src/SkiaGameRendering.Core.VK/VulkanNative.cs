@@ -39,6 +39,13 @@ namespace SkiaGameRendering.Core.VK
                 if (NativeLibrary.TryLoad("libvulkan.so.1", out var linuxHandle))
                     return linuxHandle;
 
+                // A macOS host that links MoltenVK statically (Godot does) carries its own Vulkan
+                // implementation, and a separately installed MoltenVK would be a second copy that
+                // does not recognize the host's VkInstance/VkDevice handles. Prefer the host's.
+                if (OperatingSystem.IsMacOS() &&
+                    NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(), "vkGetInstanceProcAddr", out _))
+                    return NativeLibrary.GetMainProgramHandle();
+
                 if (NativeLibrary.TryLoad("libvulkan.dylib", out var macHandle))
                     return macHandle;
                 if (NativeLibrary.TryLoad("libMoltenVK.dylib", out var moltenHandle))
@@ -122,6 +129,41 @@ namespace SkiaGameRendering.Core.VK
             uint deviceVersion = *(uint*)properties;
 
             return Math.Min(instanceVersion, deviceVersion);
+        }
+
+        /// <summary>
+        /// <c>VkQueueFamilyProperties.queueFlags</c> for every queue family of
+        /// <paramref name="physicalDevice"/>, indexed by family. See
+        /// <see cref="VkSkiaSurfaceFactory.QueryQueueFamilyFlags"/>.
+        /// </summary>
+        internal static unsafe uint[] QueryQueueFamilyFlags(IntPtr instance, IntPtr physicalDevice)
+        {
+            var getProperties = vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+            if (getProperties == IntPtr.Zero)
+                throw new EntryPointNotFoundException("vkGetInstanceProcAddr could not resolve 'vkGetPhysicalDeviceQueueFamilyProperties'.");
+            var call = (delegate* unmanaged<IntPtr, uint*, VkQueueFamilyProperties*, void>)getProperties;
+
+            uint count;
+            call(physicalDevice, &count, null);
+            var properties = new VkQueueFamilyProperties[count];
+            fixed (VkQueueFamilyProperties* p = properties)
+                call(physicalDevice, &count, p);
+
+            var flags = new uint[count];
+            for (int i = 0; i < count; i++)
+                flags[i] = properties[i].queueFlags;
+            return flags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct VkQueueFamilyProperties
+        {
+            public uint queueFlags;
+            public uint queueCount;
+            public uint timestampValidBits;
+            public uint minImageTransferGranularityWidth;
+            public uint minImageTransferGranularityHeight;
+            public uint minImageTransferGranularityDepth;
         }
     }
 }

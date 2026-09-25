@@ -1,6 +1,5 @@
 using Godot;
 using SkiaGameRendering.Core.OGL;
-using SkiaGameRendering.Raylib.OGL;
 using SkiaSharp;
 
 namespace SkiaGameRendering.Godot
@@ -21,9 +20,10 @@ namespace SkiaGameRendering.Godot
     /// <see cref="DisplayServer.WindowGetNativeHandle"/> gives the window (<c>HWND</c> on Windows, the
     /// X11 <c>Window</c> on Linux/X11) and <see cref="RenderingServer.TextureGetNativeHandle"/> gives
     /// an <see cref="ImageTexture"/>'s <c>GLuint</c>. Godot's own context is current on the render
-    /// thread, which is where this runs, so the platform code (<see cref="Wgl"/>/<see cref="Glx"/>,
-    /// linked from the raylib adapter - see the csproj) reads it with <c>wglGetCurrentContext</c>/
-    /// <c>glXGetCurrentContext</c> and creates the sharing context from it.
+    /// thread, which is where this runs, so Core.OGL's <see cref="WglSharedContext"/>/<see cref="GlxSharedContext"/>
+    /// (shared with the raylib adapter) read it with <c>wglGetCurrentContext</c>/<c>glXGetCurrentContext</c>
+    /// and create the sharing context from it. After each Skia draw they restore whichever context
+    /// and window were current before it, so a multi-window project keeps drawing to the right one.
     /// </item>
     /// <item>
     /// <b>Windows native WGL and Linux X11/GLX only.</b> Godot's other GL flavors - <c>opengl3_angle</c>
@@ -35,10 +35,9 @@ namespace SkiaGameRendering.Godot
     /// <b>Texture orientation.</b> Godot uploads image row 0 (the top) to GL texel row 0 and its
     /// canvas samples <c>v = 0</c> as the top, so Skia must write canvas row 0 into texel row 0:
     /// <see cref="GRSurfaceOrigin.TopLeft"/> (Core.OGL's default, as the MonoGame backend uses). NOT
-    /// the raylib adapter's <c>BottomLeft</c>, which flips Skia's output so that canvas row 0 lands in
-    /// the last texel row for hosts that sample the other way up - the first run here used it and
-    /// the scenario suite's asymmetric layouts showed every texture upside down (a symmetric circle
-    /// would not have).
+    /// the raylib adapter's <c>BottomLeft</c>, which puts canvas row 0 in the last texel row for hosts
+    /// that sample the other way up and shows every texture upside down here. A symmetric test image
+    /// hides the difference.
     /// </item>
     /// <item>
     /// <b>Synchronization</b> is GL's shared-object rule: the writing context flushes (Skia's
@@ -54,7 +53,7 @@ namespace SkiaGameRendering.Godot
     /// </summary>
     internal sealed class GlCompatibilityGodotBackend : SkiaGodotBackend
     {
-        IPlatformGlContext? _platform;
+        ISharedGlContext? _platform;
         GRContext? _grContext;
         GlFunctions? _gl;
 
@@ -65,11 +64,11 @@ namespace SkiaGameRendering.Godot
         internal override void Initialize(RenderingDevice? explicitDevice)
         {
             var displayServer = DisplayServer.GetName();
-            IPlatformGlContext platform;
+            ISharedGlContext platform;
             if (OperatingSystem.IsWindows() && displayServer == "Windows")
-                platform = new Wgl();
+                platform = new WglSharedContext();
             else if (OperatingSystem.IsLinux() && displayServer == "X11")
-                platform = new Glx();
+                platform = new GlxSharedContext();
             else
                 throw new PlatformNotSupportedException(
                     $"SkiaGameRendering.Godot supports Godot's Compatibility renderer on Windows (native WGL) and Linux X11 (GLX) only; " +
@@ -79,23 +78,24 @@ namespace SkiaGameRendering.Godot
             if (windowHandle == IntPtr.Zero)
                 throw new InvalidOperationException("DisplayServer.WindowGetNativeHandle(WindowHandle) returned null.");
 
-            platform.CreateSharedContext(windowHandle);
+            // Owned from here on, so Dispose releases whatever a failed CreateSharedContext made.
             _platform = platform;
+            platform.CreateSharedContext(windowHandle);
 
             platform.MakeSkiaContextCurrent();
             try
             {
-                _gl = GlFunctions.Load(new PlatformGlFunctionLoader(platform));
+                _gl = GlFunctions.Load(new SharedGlContextFunctionLoader(platform));
                 _grContext = GRContext.CreateGl()
                     ?? throw new InvalidOperationException("GRContext.CreateGl failed on the context shared with Godot's.");
             }
             finally
             {
-                platform.MakeEngineContextCurrent();
+                platform.RestoreHostContext();
             }
         }
 
-        internal override SkiaGodotTargetResources CreateTarget(int width, int height, SKColorType colorType)
+        protected override SkiaGodotTargetResources CreateTargetCore(int width, int height, SKColorType colorType)
         {
             if (colorType != SKColorType.Rgba8888)
                 throw new NotSupportedException(
@@ -112,25 +112,25 @@ namespace SkiaGameRendering.Godot
             _grContext!.ResetContext();
         }
 
-        void EndDraw() => _platform!.MakeEngineContextCurrent();
+        void EndDraw() => _platform!.RestoreHostContext();
 
         public override void Dispose()
         {
-            if (_grContext == null)
-                return;
-
-            BeginDraw();
-            try
+            if (_grContext != null)
             {
-                _grContext.Dispose();
-                _grContext = null;
+                BeginDraw();
+                try
+                {
+                    _grContext.Dispose();
+                    _grContext = null;
+                }
+                finally
+                {
+                    EndDraw();
+                }
             }
-            finally
-            {
-                EndDraw();
-            }
-            // The sharing context itself stays alive for the process, as in the raylib adapter: the
-            // platform helpers expose no destroy, and Godot owns the window and HDC it was made on.
+            _platform?.Dispose();
+            _platform = null;
         }
 
         sealed class TargetResources : SkiaGodotTargetResources
@@ -213,6 +213,7 @@ namespace SkiaGameRendering.Godot
                 if (_disposed)
                     return;
                 _disposed = true;
+                _backend.Untrack(this);
 
                 _backend.BeginDraw();
                 try

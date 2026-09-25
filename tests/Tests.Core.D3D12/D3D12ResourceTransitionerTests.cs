@@ -9,7 +9,7 @@ namespace Tests.CoreD3D12;
 /// <summary>
 /// Exercises the pieces Core.D3D12 grew for the Godot backend, on the same headless WARP device
 /// <see cref="D3D12SkiaPixelReadbackTests"/> uses: <see cref="D3D12SkiaSurfaceFactory.CreateRenderTargetResource"/>
-/// (a typed resource Skia can render into), an asynchronous <see cref="D3D12SkiaSurfaceFactory.EndDraw"/>,
+/// (a typed resource Skia can render into), an asynchronous <see cref="D3D12SkiaSurfaceFactory.EndDraw(bool)"/>,
 /// and <see cref="D3D12ResourceTransitioner.CopyWithTransitions"/> landing the result in a TYPELESS
 /// resource of the same family - the exact shape the Godot D3D12 backend runs every frame, since
 /// Godot allocates all its textures typeless. The destination is then read back through
@@ -45,7 +45,7 @@ public sealed unsafe class D3D12ResourceTransitionerTests
             var (surface, renderTarget) = factory.CreateSurface(state, width, height, SKColorType.Rgba8888);
             factory.EndDraw(synchronous: false);
 
-            // Several frames, so the two-slot ring wraps and reuses allocators/lists that were in flight.
+            // Several frames, so the two-slot ring either reuses allocators/lists that were in flight or grows.
             for (int frame = 0; frame < 5; frame++)
             {
                 factory.BeginDraw();
@@ -79,6 +79,91 @@ public sealed unsafe class D3D12ResourceTransitionerTests
                 Release(destination);
             D3D12SkiaSurfaceFactory.ReleaseResource(skiaResource);
         }
+    }
+
+    [Fact]
+    public void Transitioner_RejectsBadArgumentsAndUseAfterDispose_OnWarp()
+    {
+        using var d3d12 = new D3D12TestDevice();
+
+        Assert.Throws<ArgumentException>(() => new D3D12ResourceTransitioner(IntPtr.Zero, d3d12.Queue));
+        Assert.Throws<ArgumentException>(() => new D3D12ResourceTransitioner(d3d12.Device, IntPtr.Zero));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new D3D12ResourceTransitioner(d3d12.Device, d3d12.Queue, slots: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new D3D12ResourceTransitioner(d3d12.Device, d3d12.Queue, slots: D3D12ResourceTransitioner.MaxSlots + 1));
+
+        var transitioner = new D3D12ResourceTransitioner(d3d12.Device, d3d12.Queue);
+        Assert.Throws<ArgumentException>(() => transitioner.Transition(IntPtr.Zero, 0, 0));
+        Assert.Throws<ArgumentException>(() => transitioner.CopyWithTransitions(IntPtr.Zero, 0, 0, new IntPtr(1), 0, 0));
+        transitioner.WaitForCompletion(); // nothing pending: returns immediately
+        transitioner.Dispose();
+        transitioner.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => transitioner.Transition(new IntPtr(1), 0, 0));
+    }
+
+    /// <summary>
+    /// Many copies queued back to back from a one-slot ring: the ring grows rather than stalling,
+    /// stays within its cap, and the last copy is what lands.
+    /// </summary>
+    [Fact]
+    public void Transitioner_GrowsRingForManyInFlightSubmissions_OnWarp()
+    {
+        const int width = 4, height = 4;
+        var expected = new SKColor(20, 180, 60, 255);
+
+        using var d3d12 = new D3D12TestDevice();
+        var skiaResource = IntPtr.Zero;
+        var destination = IntPtr.Zero;
+        try
+        {
+            using var factory = new D3D12SkiaSurfaceFactory();
+            factory.InitializeFromNative(d3d12.Adapter, d3d12.Device, d3d12.Queue);
+            using var transitioner = new D3D12ResourceTransitioner(d3d12.Device, d3d12.Queue, slots: 1);
+
+            skiaResource = D3D12SkiaSurfaceFactory.CreateRenderTargetResource(d3d12.Device, width, height, D3D12Constants.FormatR8G8B8A8Unorm);
+            destination = CreateTypelessTexture(d3d12.Device, width, height, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+
+            var state = factory.CreateTextureState(skiaResource, D3D12Constants.FormatR8G8B8A8Unorm, D3D12Constants.ResourceStateRenderTarget);
+            factory.BeginDraw();
+            var (surface, renderTarget) = factory.CreateSurface(state, width, height, SKColorType.Rgba8888);
+            surface.Canvas.Clear(expected);
+            surface.Flush();
+            factory.EndDraw(synchronous: false);
+
+            for (int i = 0; i < 20; i++)
+                transitioner.CopyWithTransitions(
+                    destination, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+                    skiaResource, D3D12Constants.ResourceStateRenderTarget, D3D12Constants.ResourceStateRenderTarget);
+            transitioner.Transition(destination, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12Constants.ResourceStateCopySource);
+            Assert.InRange(transitioner.SlotCount, 1, D3D12ResourceTransitioner.MaxSlots);
+            transitioner.WaitForCompletion();
+
+            var pixels = ReadBack(d3d12, destination, width, height);
+            Assert.Equal([expected.Red, expected.Green, expected.Blue, expected.Alpha], pixels[..4]);
+
+            renderTarget.Dispose();
+            surface.Dispose();
+        }
+        finally
+        {
+            if (destination != IntPtr.Zero)
+                Release(destination);
+            D3D12SkiaSurfaceFactory.ReleaseResource(skiaResource);
+        }
+    }
+
+    [Fact]
+    public void StaticHelpers_ValidateArguments_OnWarp()
+    {
+        using var d3d12 = new D3D12TestDevice();
+
+        // WARP's answer depends on the Windows build; only that the query runs is checked here.
+        _ = D3D12SkiaSurfaceFactory.QueryEnhancedBarriersSupported(d3d12.Device);
+
+        Assert.Throws<ArgumentException>(() => D3D12SkiaSurfaceFactory.QueryEnhancedBarriersSupported(IntPtr.Zero));
+        Assert.Throws<ArgumentException>(() => D3D12SkiaSurfaceFactory.CreateRenderTargetResource(IntPtr.Zero, 4, 4, D3D12Constants.FormatR8G8B8A8Unorm));
+        Assert.Throws<ArgumentOutOfRangeException>(() => D3D12SkiaSurfaceFactory.CreateRenderTargetResource(d3d12.Device, 0, 4, D3D12Constants.FormatR8G8B8A8Unorm));
+        Assert.Throws<ArgumentOutOfRangeException>(() => D3D12SkiaSurfaceFactory.CreateRenderTargetResource(d3d12.Device, 4, -1, D3D12Constants.FormatR8G8B8A8Unorm));
+        D3D12SkiaSurfaceFactory.ReleaseResource(IntPtr.Zero); // no-op
     }
 
     static IntPtr CreateTypelessTexture(IntPtr device, int width, int height, uint initialState)

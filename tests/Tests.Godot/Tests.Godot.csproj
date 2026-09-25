@@ -19,17 +19,19 @@
   </ItemGroup>
 
   <!--
-    Nothing in this project references the Godot adapter's assembly: GodotSharp's types only work
-    inside a running Godot process, so the adapter cannot be exercised in-process the way the other
-    backends' tests exercise theirs. Instead GodotSampleTests launches the real Godot binary against
-    samples/Sample.Godot, once per RenderingDevice driver, and checks the screenshot it writes. The
-    reference below exists only to make `dotnet test` build that sample first
+    GodotSharp's types only work inside a running Godot process, so the adapter cannot be exercised
+    in-process the way the other backends' tests exercise theirs. The adapter reference is only for
+    its Godot-free helpers (GodotVulkanQueueFamilies); anything touching a Godot type must go through
+    GodotSampleTests, which launches the real Godot binary against samples/Sample.Godot, once per
+    supported rendering driver, and checks the screenshot it writes. The sample reference below
+    exists only to make `dotnet test` build that sample first
     (ReferenceOutputAssembly=false copies nothing). SetConfiguration pins that build to Debug
     whatever configuration this project is built in: Godot loads a project's assembly from
     .godot/mono/temp/bin/Debug when running it outside an export, so a Release-built sample would be
     invisible to it and the test would fail for the wrong reason.
   -->
   <ItemGroup>
+    <ProjectReference Include="..\..\src\SkiaGameRendering.Godot\SkiaGameRendering.Godot.csproj" />
     <ProjectReference Include="..\..\samples\Sample.Godot\Sample.Godot.csproj" ReferenceOutputAssembly="false" SetConfiguration="Configuration=Debug" />
   </ItemGroup>
 </Project>
