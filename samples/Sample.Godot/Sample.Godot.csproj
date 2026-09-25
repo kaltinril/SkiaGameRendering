@@ -18,8 +18,6 @@
     <ProjectReference Include="..\..\src\SkiaGameRendering.Godot\SkiaGameRendering.Godot.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="..\Shared\Scene.cs" Link="Scene.cs" />
-  </ItemGroup>
+  <Import Project="..\Shared\Scene.props" />
 
 </Project>

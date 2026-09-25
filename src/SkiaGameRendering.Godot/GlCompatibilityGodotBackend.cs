@@ -86,8 +86,7 @@ namespace SkiaGameRendering.Godot
             try
             {
                 _gl = GlFunctions.Load(new SharedGlContextFunctionLoader(platform));
-                _grContext = GRContext.CreateGl()
-                    ?? throw new InvalidOperationException("GRContext.CreateGl failed on the context shared with Godot's.");
+                _grContext = GlGrContextFactory.Create(_gl);
             }
             finally
             {
