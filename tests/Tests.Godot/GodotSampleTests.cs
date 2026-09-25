@@ -21,6 +21,7 @@ public class GodotSampleTests
     [GodotBinaryTheory]
     [InlineData("vulkan")]
     [InlineData("d3d12")]
+    [InlineData("opengl3")]
     public void GodotSampleRendersSkiaSceneIntoTexture2DRD(string renderingDriver)
     {
         if (renderingDriver == "d3d12" && !OperatingSystem.IsWindows())
@@ -76,6 +77,12 @@ public class GodotSampleTests
         };
         startInfo.ArgumentList.Add("--path");
         startInfo.ArgumentList.Add(sampleDir);
+        if (renderingDriver.StartsWith("opengl3", StringComparison.Ordinal))
+        {
+            // The Compatibility renderer is a rendering METHOD; its drivers are opengl3/opengl3_angle/opengl3_es.
+            startInfo.ArgumentList.Add("--rendering-method");
+            startInfo.ArgumentList.Add("gl_compatibility");
+        }
         startInfo.ArgumentList.Add("--rendering-driver");
         startInfo.ArgumentList.Add(renderingDriver);
         startInfo.ArgumentList.Add("--");

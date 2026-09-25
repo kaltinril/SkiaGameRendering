@@ -18,22 +18,25 @@ namespace SkiaGameRendering.Godot
     /// skia.Canvas.DrawCircle(256, 256, 200, paint);
     /// skia.End();
     /// </code>
-    /// Works on the Forward+ and Mobile renderers with the Vulkan or D3D12 driver (the backend is
-    /// picked at runtime from <see cref="RenderingServer.GetCurrentRenderingDriverName"/>), and must
-    /// be used on the render thread - the main thread under Godot's default "Safe" thread model, or
-    /// inside <see cref="RenderingServer.CallOnRenderThread"/> under "Separate". See
-    /// <c>SkiaGodotBackend</c> and its two implementations for what happens underneath.
+    /// Works on the Forward+ and Mobile renderers with the Vulkan or D3D12 driver and on the
+    /// Compatibility renderer with the native OpenGL driver (the backend is picked at runtime from
+    /// <see cref="RenderingServer.GetCurrentRenderingDriverName"/>), and must be used on the render
+    /// thread - the main thread under Godot's default "Safe" thread model, or inside
+    /// <see cref="RenderingServer.CallOnRenderThread"/> under "Separate". See <c>SkiaGodotBackend</c>
+    /// and its implementations for what happens underneath.
     /// </summary>
     public sealed class SkiaGodotRenderTarget2D : IDisposable
     {
-        SkiaGodotTarget? _target;
+        SkiaGodotTargetResources? _target;
+        SKSurface? _surface;
         bool _hasBegun;
 
         /// <summary>
         /// Allocates a fixed-size texture. Must be called on Godot's render thread (see the class
-        /// doc comment); auto-initializes <see cref="SkiaGodotRenderer"/> against Godot's global
-        /// <see cref="RenderingDevice"/> on first use. The constructor stalls the GPU briefly once,
-        /// to hand the new texture to Godot in a known state - create targets up front, not per frame.
+        /// doc comment); auto-initializes <see cref="SkiaGodotRenderer"/> on first use. On the
+        /// RenderingDevice drivers the constructor stalls the GPU briefly once, to hand the new texture
+        /// to Godot in a known state - create targets up front, not per frame. The Compatibility
+        /// renderer supports <see cref="SKColorType.Rgba8888"/> only.
         /// </summary>
         public SkiaGodotRenderTarget2D(int width, int height, SKColorType colorType = SKColorType.Rgba8888)
         {
@@ -47,7 +50,7 @@ namespace SkiaGameRendering.Godot
             Width = width;
             Height = height;
             var backend = SkiaGodotRenderer.EnsureInitialized();
-            _target = new SkiaGodotTarget(backend, width, height, colorType);
+            _target = backend.CreateTarget(width, height, colorType);
         }
 
         public int Width { get; }
@@ -69,7 +72,8 @@ namespace SkiaGameRendering.Godot
         /// (e.g. as a <c>SamplerWithTexture</c> uniform in your own fragment shader). Owned by this
         /// object; do not free it. Do not copy to or from it, clear it, or bind it as a storage image
         /// through <see cref="RenderingDevice"/>: Godot's render graph would then move it out of the
-        /// sampled layout this object keeps it in.
+        /// sampled layout this object keeps it in. Invalid (<c>default</c>) on the Compatibility
+        /// renderer, which has no RenderingDevice.
         /// </summary>
         public Rid TextureRid =>
             (_target ?? throw new ObjectDisposedException(nameof(SkiaGodotRenderTarget2D))).TextureRid;
@@ -79,7 +83,7 @@ namespace SkiaGameRendering.Godot
         /// accessing it outside that window throws.
         /// </summary>
         public SKCanvas Canvas => _hasBegun
-            ? _target!.Surface.Canvas
+            ? _surface!.Canvas
             : throw new InvalidOperationException("Begin must be called before accessing Canvas.");
 
         /// <summary>
@@ -95,11 +99,11 @@ namespace SkiaGameRendering.Godot
                 throw new InvalidOperationException("Begin cannot be called again until End has been called.");
             SkiaGodotRenderer.RequireRenderThread("SkiaGodotRenderTarget2D.Begin");
 
-            var surface = _target.BeginFrame();
+            _surface = _target.BeginFrame();
             _hasBegun = true;
 
             if (clear)
-                surface.Canvas.Clear();
+                _surface.Canvas.Clear();
         }
 
         /// <summary>
@@ -120,6 +124,7 @@ namespace SkiaGameRendering.Godot
             finally
             {
                 _hasBegun = false;
+                _surface = null;
             }
         }
 

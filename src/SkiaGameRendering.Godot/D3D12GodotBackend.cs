@@ -7,8 +7,8 @@ namespace SkiaGameRendering.Godot
     /// <summary>
     /// The D3D12 backend - Godot's default driver for new Windows projects since 4.6. Hands Godot's
     /// own <c>IDXGIAdapter1</c>/<c>ID3D12Device</c>/<c>ID3D12CommandQueue</c> to
-    /// <see cref="D3D12SkiaSurfaceFactory"/>. See <see cref="SkiaGodotBackend"/> for what both backends
-    /// share.
+    /// <see cref="D3D12SkiaSurfaceFactory"/>. See <see cref="RenderingDeviceGodotBackend"/> for what the two RD
+    /// backends share.
     ///
     /// <b>Not zero-copy, deliberately.</b> Godot's D3D12 driver allocates every texture with its
     /// typeless family format (<c>resource_desc.Format = RD_TO_D3D12_FORMAT[...].family</c> in
@@ -52,7 +52,7 @@ namespace SkiaGameRendering.Godot
     /// </item>
     /// </list>
     /// </summary>
-    internal sealed class D3D12GodotBackend : SkiaGodotBackend
+    internal sealed class D3D12GodotBackend : RenderingDeviceGodotBackend
     {
         readonly D3D12SkiaSurfaceFactory _factory = new();
         D3D12ResourceTransitioner? _transitioner;
@@ -90,7 +90,7 @@ namespace SkiaGameRendering.Godot
             _transitioner = new D3D12ResourceTransitioner(device, queue);
         }
 
-        internal override SkiaGodotTargetResources CreateResources(Rid texture, int width, int height, SKColorType colorType)
+        internal override RenderingDeviceGpuResources CreateGpuResources(Rid texture, int width, int height, SKColorType colorType)
         {
             var godotResource = (IntPtr)RenderingDevice.GetDriverResource(RenderingDevice.DriverResource.Texture, texture, 0);
             if (godotResource == IntPtr.Zero)
@@ -121,7 +121,7 @@ namespace SkiaGameRendering.Godot
         };
 
         /// <summary>One Skia-owned typed resource plus the persistent surface wrapping it. See the class doc comment for why the copy.</summary>
-        sealed class Resources : SkiaGodotTargetResources
+        sealed class Resources : RenderingDeviceGpuResources
         {
             readonly D3D12GodotBackend _backend;
             readonly IntPtr _godotResource;

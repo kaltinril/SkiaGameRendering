@@ -20,7 +20,7 @@
       choose a graphics-API-specific package at build time. The backend is selected from
       RenderingServer.GetCurrentRenderingDriverName() when the renderer initializes.
     -->
-    <Description>GPU SkiaSharp rendering into Godot 4 textures (Texture2DRD) on the Vulkan and D3D12 RenderingDevice drivers (Forward+ and Mobile renderers), with zero-copy GPU texture sharing on Vulkan.</Description>
+    <Description>GPU SkiaSharp rendering into Godot 4 textures on the Vulkan and D3D12 RenderingDevice drivers (Forward+ and Mobile renderers) and the Compatibility renderer's native OpenGL driver, with zero-copy GPU texture sharing on Vulkan and OpenGL.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
     <RepositoryUrl>https://github.com/vchelaru/SkiaGameRendering</RepositoryUrl>
@@ -49,6 +49,22 @@
     <ProjectReference Include="..\SkiaGameRendering.Core.VK\SkiaGameRendering.Core.VK.csproj" />
     <!-- Only touched when Godot reports the d3d12 driver; compiles everywhere, runs on Windows. -->
     <ProjectReference Include="..\SkiaGameRendering.Core.D3D12\SkiaGameRendering.Core.D3D12.csproj" />
+    <!-- The Compatibility (OpenGL) renderer: FBO-wrapping a GL texture, like the raylib adapter. -->
+    <ProjectReference Include="..\SkiaGameRendering.Core.OGL\SkiaGameRendering.Core.OGL.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The Compatibility backend needs a second native GL context sharing Godot's object namespace,
+      which is exactly the WGL/GLX plumbing the raylib adapter already carries. Linked rather than
+      duplicated (the repo's usual pattern for shared source); the classes are internal, so they
+      compile into this assembly under their original namespace. Moving them into Core.OGL as public
+      types is the cleaner home once a third GL host needs them.
+    -->
+    <Compile Include="..\SkiaGameRendering.Raylib.OGL\IPlatformGlContext.cs" Link="Gl\IPlatformGlContext.cs" />
+    <Compile Include="..\SkiaGameRendering.Raylib.OGL\PlatformGlFunctionLoader.cs" Link="Gl\PlatformGlFunctionLoader.cs" />
+    <Compile Include="..\SkiaGameRendering.Raylib.OGL\Wgl.cs" Link="Gl\Wgl.cs" />
+    <Compile Include="..\SkiaGameRendering.Raylib.OGL\Glx.cs" Link="Gl\Glx.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -8,13 +8,13 @@ namespace SkiaGameRendering.Godot
     /// The Vulkan backend: hands Godot's own <c>VkInstance</c>/<c>VkPhysicalDevice</c>/<c>VkDevice</c>/
     /// <c>VkQueue</c> to <see cref="VkSkiaSurfaceFactory"/> and wraps the RD texture's <c>VkImage</c> for
     /// Skia to draw into directly - zero-copy, the same shape as the Stride Vulkan adapter. See
-    /// <see cref="SkiaGodotBackend"/> for what both backends share.
+    /// <see cref="RenderingDeviceGodotBackend"/> for what the two RD backends share.
     ///
     /// MAINTENANCE NOTES (read from Godot 4.7.2's source, not assumed):
     /// <list type="bullet">
     /// <item>
     /// <b>Godot's layout bookkeeping is kept truthful with three pieces</b>, all verified clean under
-    /// Godot's <c>--gpu-validation</c> (Khronos validation layer): <see cref="SkiaGodotBackend.PrimeForSampling"/>
+    /// Godot's <c>--gpu-validation</c> (Khronos validation layer): <c>RenderingDeviceGodotBackend.PrimeForSampling</c>
     /// makes Godot's single <c>UNDEFINED -> SHADER_READ_ONLY_OPTIMAL</c> transition happen before Skia
     /// draws (a transition FROM <c>UNDEFINED</c> may discard contents, which tiled/mobile drivers
     /// do); <see cref="HandBack"/> submits an explicit <c>COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL</c>
@@ -48,7 +48,7 @@ namespace SkiaGameRendering.Godot
     /// </item>
     /// </list>
     /// </summary>
-    internal sealed class VulkanGodotBackend : SkiaGodotBackend
+    internal sealed class VulkanGodotBackend : RenderingDeviceGodotBackend
     {
         const uint ImageUsageFlags =
             VkConstants.ImageUsageTransferSrc | VkConstants.ImageUsageTransferDst |
@@ -94,7 +94,7 @@ namespace SkiaGameRendering.Godot
             _transitioner = new VkImageLayoutTransitioner(device, queue, queueFamilyIndex);
         }
 
-        internal override SkiaGodotTargetResources CreateResources(Rid texture, int width, int height, SKColorType colorType)
+        internal override RenderingDeviceGpuResources CreateGpuResources(Rid texture, int width, int height, SKColorType colorType)
         {
             var image = RenderingDevice.GetDriverResource(RenderingDevice.DriverResource.Texture, texture, 0);
             var format = (uint)RenderingDevice.GetDriverResource(RenderingDevice.DriverResource.TextureDataFormat, texture, 0);
@@ -146,7 +146,7 @@ namespace SkiaGameRendering.Godot
         /// sentinel away and is a render pass itself.
         /// </para>
         /// </summary>
-        sealed class Resources : SkiaGodotTargetResources
+        sealed class Resources : RenderingDeviceGpuResources
         {
             static readonly SKRect SentinelRect = SKRect.Create(0, 0, 1, 1);
 

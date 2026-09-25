@@ -1,11 +1,11 @@
 # Godot quick start
 
 Godot 4 is the first engine this library supports whose graphics device is reachable entirely
-through public API: `RenderingDevice.GetDriverResource` hands out the raw Vulkan or D3D12 handles,
-so `SkiaGameRendering.Godot` uses no reflection at all. It is also the first engine here where one
-package covers two graphics APIs, because Godot picks its RenderingDevice driver at run time (a
-project setting, a command-line switch, or an automatic fallback), so the backend is chosen when the
-renderer initializes. Like the raylib and Stride adapters it does not go through
+through public API: `RenderingDevice.GetDriverResource` hands out the raw Vulkan or D3D12 handles
+and `RenderingServer.TextureGetNativeHandle` a GL texture, so `SkiaGameRendering.Godot` uses no
+reflection at all. It is also the first engine here where one package covers three graphics APIs,
+because Godot picks its renderer and driver at run time (project settings, a command-line switch,
+or an automatic fallback), so the backend is chosen when the renderer initializes. Like the raylib and Stride adapters it does not go through
 `SkiaBackend`/`SkiaRenderer` - see [SkiaGodotRenderTarget2D](../documentation/SkiaGodotRenderTarget2D.md)
 for how it is structured.
 
@@ -14,9 +14,10 @@ for how it is structured.
 - Godot 4.7 or newer, the .NET build (this package references `GodotSharp` 4.7.2 as a floor; a
   newer editor's own `Godot.NET.Sdk` unifies it upward)
 - A C# Godot project targeting .NET 8 or newer
-- The **Forward+** or **Mobile** renderer on the **Vulkan** driver (Windows, Linux, macOS via
-  MoltenVK) or the **D3D12** driver (Windows). The Compatibility (OpenGL) renderer has no
-  `RenderingDevice`; Metal is not supported yet (see "Known limitations").
+- One of: the **Forward+** or **Mobile** renderer on the **Vulkan** driver (Windows, Linux, macOS
+  via MoltenVK) or the **D3D12** driver (Windows); or the **Compatibility** renderer on the native
+  `opengl3` driver (Windows; Linux X11). Metal, and the Compatibility renderer's ANGLE/Android/
+  Wayland/macOS flavors, are not supported yet (see "Known limitations").
 
 ## Add the package
 
@@ -35,9 +36,10 @@ game's `.csproj` instead; the package's dependencies (`SkiaSharp`, `GodotSharp`)
 
 ## Pick a supported driver
 
-Godot 4.6+ configures **new** Windows projects for `d3d12` and macOS for `metal`. D3D12 and Vulkan
-both work with this package; Metal does not, so a macOS project needs Vulkan in `project.godot` (or
-Project Settings > Rendering > Rendering Device > Driver, with "Advanced Settings" on):
+Godot 4.6+ configures **new** Windows projects for `d3d12` and macOS for `metal`. D3D12, Vulkan and
+the Compatibility renderer's `opengl3` all work with this package; Metal does not, so a macOS
+project needs Vulkan in `project.godot` (or Project Settings > Rendering > Rendering Device >
+Driver, with "Advanced Settings" on):
 
 ```ini
 [rendering]
@@ -47,14 +49,15 @@ rendering_device/driver.macos="vulkan"
 ```
 
 `SkiaGodotRenderer.Initialize` throws with this instruction on an unsupported driver.
-`--rendering-driver vulkan` (or `d3d12`) on the command line overrides the setting for one run.
+`--rendering-driver vulkan` (or `d3d12`; or `--rendering-method gl_compatibility` for OpenGL) on the
+command line overrides the settings for one run.
 
 ## Initialize and render
 
 Godot has no user-owned `Draw()` loop. A node draws Skia content into a `SkiaGodotRenderTarget2D`
 in `_Process`, and the scene tree displays its `Texture` (a stock `Texture2DRD`) through any node
 that takes a `Texture2D` - a `Sprite2D`, `TextureRect`, material, and so on. The same code runs on
-both drivers:
+every supported renderer:
 
 ```cs
 using Godot;
@@ -71,7 +74,7 @@ public partial class SkiaOverlay : Node2D
         // Optional - the render target auto-initializes on first use. Calling this explicitly
         // fails fast if the project is not on a supported RenderingDevice driver.
         SkiaGodotRenderer.Initialize();
-        GD.Print($"Skia on {SkiaGodotRenderer.Driver}"); // "vulkan" or "d3d12"
+        GD.Print($"Skia on {SkiaGodotRenderer.Driver}"); // "vulkan", "d3d12" or "opengl3"
 
         var size = GetViewportRect().Size;
         _canvas = new SkiaGodotRenderTarget2D((int)size.X, (int)size.Y);
@@ -121,6 +124,7 @@ binary - this repo does not ship or download Godot:
 dotnet build samples\Sample.Godot\Sample.Godot.csproj -c Debug
 <path-to>\Godot_v4.7.x-stable_mono_win64.exe --path samples\Sample.Godot --rendering-driver vulkan
 <path-to>\Godot_v4.7.x-stable_mono_win64.exe --path samples\Sample.Godot --rendering-driver d3d12
+<path-to>\Godot_v4.7.x-stable_mono_win64.exe --path samples\Sample.Godot --rendering-method gl_compatibility
 ```
 
 Debug configuration matters: Godot loads the project assembly from `.godot/mono/temp/bin/Debug/`
@@ -130,28 +134,33 @@ to the Godot executable to enable that test; it skips otherwise).
 
 ## Known limitations
 
-- **Vulkan is zero-copy; D3D12 is one GPU copy per frame.** Godot's D3D12 driver allocates every
-  texture with a typeless format and Skia's D3D12 backend cannot render into those, so on D3D12
-  Skia draws into a typed texture this library owns and `End()` queues a `CopyResource` into
-  Godot's texture. No CPU readback either way; `SkiaGodotRenderer.IsZeroCopy` tells you which path
-  is active.
-- **Metal is not supported** (no Metal interop in this library yet); the Compatibility (OpenGL)
-  renderer has no `RenderingDevice`.
+- **Vulkan and OpenGL are zero-copy; D3D12 is one GPU copy per frame.** Godot's D3D12 driver
+  allocates every texture with a typeless format and Skia's D3D12 backend cannot render into
+  those, so on D3D12 Skia draws into a typed texture this library owns and `End()` queues a
+  `CopyResource` into Godot's texture. No CPU readback anywhere; `SkiaGodotRenderer.IsZeroCopy`
+  tells you which path is active.
+- **Compatibility renderer: native `opengl3` on Windows (WGL) and Linux X11 (GLX) only, RGBA8
+  only.** Godot's `opengl3_angle` (ANGLE on Windows/macOS), `opengl3_es` (Android), Wayland and
+  macOS native GL use EGL or NSOpenGL contexts this library has no platform code for; web exports
+  cannot P/Invoke GL at all. `TextureRid` is invalid there (no RenderingDevice).
+- **Metal is not supported** (no Metal interop in this library yet).
 - **HDR 2D** (`rendering/viewport/hdr_2d`) is not compensated for: the texture is a plain UNORM
   format holding Skia's sRGB-encoded bytes, which is exactly right for Godot's default gamma-space
   2D pipeline.
-- **A one-time GPU stall per constructor, none per frame.** Godot tracks each texture's layout or
-  state itself and SkiaSharp cannot be told which to leave a resource in, so the constructor runs a
-  tiny fragment-shader pass and waits for it so Godot records the texture as sampled before Skia's
-  first draw, and `End()` hands the texture back in that state with a small extra queue submission.
-  Create targets up front, not per frame. See the documentation page for the full mechanism.
+- **On the RenderingDevice drivers, a one-time GPU stall per constructor, none per frame.** Godot
+  tracks each texture's layout or state itself and SkiaSharp cannot be told which to leave a
+  resource in, so the constructor runs a tiny fragment-shader pass and waits for it so Godot
+  records the texture as sampled before Skia's first draw, and `End()` hands the texture back in
+  that state with a small extra queue submission. Create targets up front, not per frame. See the
+  documentation page for the full mechanism. (OpenGL has no layouts; none of this applies there.)
 - **`TextureRid` is for fragment-shader sampling only.** Binding it in your own CanvasItem or
   spatial fragment shader is fine; copying to or from it, clearing it, or using it as a storage
   image through `RenderingDevice` moves it out of the state this library keeps it in. On D3D12
   without enhanced barriers, sampling it from a vertex or compute shader does too.
-- Verified on Windows with an NVIDIA GPU under Godot 4.7.2, on both drivers, including clean runs
-  under Godot's `--gpu-validation` (Khronos validation layer for Vulkan, the D3D12 debug layer for
-  D3D12). That machine runs Godot's D3D12 driver with enhanced barriers; the legacy state-tracking
-  path (older D3D12 runtimes) is implemented from Godot's source but has not been exercised. Linux
-  and macOS are expected to work identically on Vulkan (same public API, same Skia Vulkan path
-  Stride uses there) but have not been run.
+- Verified on Windows with an NVIDIA GPU under Godot 4.7.2, on all three drivers, including clean
+  runs under Godot's `--gpu-validation` (Khronos validation layer for Vulkan, the D3D12 debug layer
+  for D3D12, GL debug output for OpenGL). That machine runs Godot's D3D12 driver with enhanced
+  barriers; the legacy state-tracking path (older D3D12 runtimes) is implemented from Godot's source
+  but has not been exercised. Linux and macOS are expected to work identically on Vulkan (same
+  public API, same Skia Vulkan path Stride uses there), and Linux X11 on OpenGL (the raylib
+  adapter's GLX code), but have not been run.

@@ -307,12 +307,13 @@ same as MonoGame, and the golden comes out identical to the DesktopGL ones.
   `GALLIUM_DRIVER` unset, Mesa's D3D12 path crashes the test host (MonoGame's DesktopGL tests
   too); that's the known landmine in the `headless-gpu-testing` skill, not the adapter.
 
-## 11. Godot 4 (Vulkan and D3D12, completed)
+## 11. Godot 4 (Vulkan, D3D12 and Compatibility/OpenGL, completed)
 
 `src/SkiaGameRendering.Godot` targets Godot 4.7+ .NET projects on the Forward+/Mobile renderer
-with the Vulkan or D3D12 driver - one package, backend chosen at run time from
-`RenderingServer.GetCurrentRenderingDriverName()`, because Godot decides its driver per run (a
-project setting, `--rendering-driver`, or an automatic fallback). It is the first adapter in this
+with the Vulkan or D3D12 driver and on the Compatibility renderer with the native OpenGL driver -
+one package, backend chosen at run time from `RenderingServer.GetCurrentRenderingDriverName()`,
+because Godot decides its renderer and driver per run (project settings, `--rendering-driver`/
+`--rendering-method`, or an automatic fallback). It is the first adapter in this
 repo that reaches the engine's device with **no reflection**: `RenderingDevice.GetDriverResource(DriverResource.X, rid, 0)` is public API
 (Godot 4.3+) returning the raw `VkInstance` (`TopmostObject`), `VkPhysicalDevice`, `VkDevice`
 (`LogicalDevice`), `VkQueue` (`CommandQueue`), queue family index (`QueueFamily`), and for any RD
@@ -464,4 +465,25 @@ different from Vulkan:
 fence, `Transition` and `CopyWithTransitions`), the `CreateRenderTargetResource`/`ReleaseResource`
 helpers, `QueryEnhancedBarriersSupported`, and `EndDraw(synchronous)`, all over raw COM vtables in
 `D3D12Com.cs` (slots cross-checked against `tests/Tests.Core.D3D12/D3D12TestNative.cs`).
+
+### Compatibility renderer (OpenGL)
+
+The Compatibility renderer has no `RenderingDevice` (`GetRenderingDevice()` is null), so none of
+the above applies; what Godot does expose is the window (`DisplayServer.WindowGetNativeHandle`)
+and, for any `ImageTexture`, its `GLuint` (`RenderingServer.TextureGetNativeHandle`). That is
+exactly the raylib adapter's situation, and the backend is that adapter's shape: `Wgl.cs`/`Glx.cs`
+(linked from `src/SkiaGameRendering.Raylib.OGL`) create a second context sharing Godot's object
+namespace off the context current on the render thread, Skia gets its own `GRContext` on it, and
+`Core.OGL`'s `GlSkiaSurfaceFactory` wraps the texture in an FBO with `GRSurfaceOrigin.TopLeft`:
+Godot uploads image row 0 to texel row 0 and samples v=0 as the top, so Skia must write canvas row 0
+into texel row 0 - the opposite of the raylib adapter's `BottomLeft`, and a first run with raylib's
+choice rendered everything upside down. The symmetric sample circle could not tell; the scenario
+suite's asymmetric layouts did, which is the reason that suite exists. Separate contexts keep
+Godot's cached GL state and Skia's apart; cross-context visibility is GL's shared-object rule
+(Skia's flush ends in `glFlush`, Godot's canvas binds the texture per draw). Zero-copy, a
+persistent surface, no priming or hand-back. Limits: Godot's `Image.Format` has no BGRA/10-bit
+formats, so RGBA8 only; and only the native `opengl3` driver on Windows (WGL) and Linux X11 (GLX) -
+`opengl3_angle`, `opengl3_es`, Wayland and macOS are EGL/NSOpenGL contexts with no platform code
+here yet, and web exports cannot P/Invoke GL at all. Verified on Windows; the GLX path compiles
+from the raylib adapter's code but has not been run under Godot.
 
